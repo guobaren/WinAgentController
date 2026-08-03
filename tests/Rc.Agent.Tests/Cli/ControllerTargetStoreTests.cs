@@ -81,6 +81,20 @@ public sealed class ControllerTargetStoreTests : IDisposable
         Assert.Contains("does not match", mismatch.Error, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ResolverRejectsDuplicateFingerprintsForNamedTarget()
+    {
+        var store = new ControllerTargetStore(root);
+        await store.AddAsync("lab", "device-1", IPEndPoint.Parse("192.168.10.5:43001"), Fingerprint);
+        var resolver = new TargetArgumentResolver(store);
+
+        var resolved = await resolver.ResolveAsync([
+            "exec", "lab", "--fingerprint", Fingerprint, "--fingerprint", new string('B', 64), "--command", "hostname"]);
+
+        Assert.False(resolved.Success);
+        Assert.Contains("Only one --fingerprint", resolved.Error, StringComparison.Ordinal);
+    }
+
     public static TheoryData<string[], int> RemoteCommandArguments => new()
     {
         { ["probe", "lab"], 1 },

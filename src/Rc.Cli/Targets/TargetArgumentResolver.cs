@@ -72,7 +72,22 @@ internal sealed class TargetArgumentResolver(ControllerTargetStore store)
             expanded.Insert(endpointIndex, profile.Endpoint);
         }
 
-        var fingerprintIndex = expanded.FindIndex(value => string.Equals(value, "--fingerprint", StringComparison.Ordinal));
+        var fingerprintIndex = -1;
+        for (var index = 0; index < expanded.Count; index++)
+        {
+            if (!string.Equals(expanded[index], "--fingerprint", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (fingerprintIndex >= 0)
+            {
+                return TargetArgumentResolution.Failed("Only one --fingerprint option is allowed for a target profile.");
+            }
+
+            fingerprintIndex = index;
+        }
+
         if (fingerprintIndex >= 0)
         {
             if (fingerprintIndex + 1 >= expanded.Count)
