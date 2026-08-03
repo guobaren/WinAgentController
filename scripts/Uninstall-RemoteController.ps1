@@ -7,9 +7,20 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ConfirmPreference = 'None'
 $services = @('RemoteControllerAgent', 'RemoteControllerBroker')
 $firewallRule = 'RemoteController Agent TCP'
 $uiTaskName = 'RemoteControllerUiAgent'
+
+function Invoke-ElevatedSelf {
+    $command = "& '{0}' -InstallPath '{1}' -DataRoot '{2}'" -f $PSCommandPath, $InstallPath, $DataRoot
+    if ($KeepData) { $command += ' -KeepData' }
+    $arguments = '-NoProfile -ExecutionPolicy Bypass -Command "{0}"' -f $command
+
+    $process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
+        -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+    exit $process.ExitCode
+}
 
 function Stop-UiAgent {
     $task = Get-ScheduledTask -TaskName $uiTaskName -ErrorAction SilentlyContinue
@@ -36,7 +47,9 @@ function Stop-UiAgent {
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-if (-not $PSBoundParameters.ContainsKey('WhatIf') -and -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Uninstallation requires an elevated PowerShell session.' }
+if (-not $PSBoundParameters.ContainsKey('WhatIf') -and -not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Invoke-ElevatedSelf
+}
 
 if ($PSCmdlet.ShouldProcess($uiTaskName, 'Stop UI Agent before removal')) {
     Stop-UiAgent

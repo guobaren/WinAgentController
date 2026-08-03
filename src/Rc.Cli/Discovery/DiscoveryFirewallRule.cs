@@ -40,7 +40,7 @@ internal static class DiscoveryFirewallRule
             {
                 existingRule = rules.Item(RuleName);
             }
-            catch (COMException)
+            catch (Exception exception) when (exception is COMException or FileNotFoundException)
             {
                 // The rule does not exist yet.
             }
@@ -71,7 +71,8 @@ internal static class DiscoveryFirewallRule
             rule.Grouping = "RemoteController";
             rules.Add(rule);
         }
-        catch (COMException exception) when ((uint)exception.HResult == 0x80070005)
+        catch (Exception exception) when (exception is UnauthorizedAccessException ||
+            exception is COMException comException && (uint)comException.HResult == 0x80070005)
         {
             throw new InvalidOperationException(
                 "Unable to enable the LAN discovery firewall rule. Run rcctl discover from an elevated PowerShell or Command Prompt.",

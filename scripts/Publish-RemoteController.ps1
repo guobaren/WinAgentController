@@ -36,7 +36,7 @@ foreach ($name in $projects.Keys) {
     Copy-Item -LiteralPath $executable -Destination (Join-Path $output "$name.exe") -Force
 }
 
-$packageFiles = @('Install-RemoteController.ps1', 'Update-RemoteController.ps1', 'Uninstall-RemoteController.ps1', 'Start-RemoteController.cmd', 'Start-RemoteControllerUiTest.cmd', 'Repair-RemoteControllerTlsIdentity.ps1', 'Test-RemoteControllerUi.ps1', 'Setup-RemoteControllerAgent.ps1', 'Setup-RemoteControllerAgent.cmd', 'RemoteController.Agent.config.json')
+$packageFiles = @('Install-RemoteController.ps1', 'Update-RemoteController.ps1', 'Uninstall-RemoteController.ps1', 'Uninstall-RemoteController.cmd', 'Start-RemoteController.cmd', 'Start-RemoteControllerUiTest.cmd', 'Repair-RemoteControllerTlsIdentity.ps1', 'Test-RemoteControllerUi.ps1', 'Setup-RemoteControllerAgent.ps1', 'Setup-RemoteControllerAgent.cmd', 'RemoteController.Agent.config.json')
 foreach ($name in $projects.Keys) {
     if (-not (Test-Path -LiteralPath (Join-Path $output "$name.exe") -PathType Leaf)) { throw "Missing packaged executable: $name.exe" }
 }

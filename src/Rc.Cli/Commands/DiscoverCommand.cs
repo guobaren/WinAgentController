@@ -56,7 +56,7 @@ internal static class DiscoverCommand
         }
     }
 
-    private static async Task<IReadOnlyList<DiscoveryResultRow>> ReceiveAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    internal static async Task<IReadOnlyList<DiscoveryResultRow>> ReceiveAsync(TimeSpan timeout, CancellationToken cancellationToken)
     {
         using var client = new UdpClient(AddressFamily.InterNetwork);
         client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
@@ -163,7 +163,7 @@ internal static class DiscoverCommand
     private static Task WriteFailureAsync(TextWriter output, RemoteError error) =>
         output.WriteLineAsync(JsonSerializer.Serialize(Result.Failure<IReadOnlyList<DiscoveryResultRow>>(error), ContractJson.Options));
 
-    private sealed record DiscoveryResultRow(
+    internal sealed record DiscoveryResultRow(
         string DeviceId,
         string DisplayName,
         string Address,

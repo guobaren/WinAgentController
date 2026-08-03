@@ -7,6 +7,16 @@ $target = '192.168.1.50:43001'
 $fingerprint = '<SHA256>'
 ```
 
+Alternatively, save and select a controller-side target profile:
+
+```powershell
+rcctl target add lab $target --fingerprint $fingerprint --text
+rcctl target use lab --text
+rcctl target refresh lab --timeout-ms 4000 --text
+```
+
+Use `lab` in place of `<IP:port>`, or omit both the endpoint and fingerprint after `target use`. A refresh may update only the endpoint discovered for the saved device ID and pinned fingerprint; discovery must never replace the saved fingerprint.
+
 Use `--text` for readable output. Without it, preserve structured output when feeding results to automation.
 
 ## Execute commands and jobs

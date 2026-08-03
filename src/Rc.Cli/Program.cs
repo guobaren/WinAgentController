@@ -1,4 +1,5 @@
 using Rc.Cli.Commands;
+using Rc.Cli.Targets;
 using System.Text.Json;
 using Rc.Contracts;
 
@@ -7,9 +8,34 @@ using var capturedOutput = textMode ? null : new StringWriter();
 using var capturedError = textMode ? null : new StringWriter();
 var output = textMode ? Console.Out : capturedOutput!;
 var error = textMode ? Console.Error : capturedError!;
-var exitCode = args.Length == 0
-    ? await WriteUsageAndReturnAsync(error)
-    : await DispatchAsync(args, output, error);
+var dispatchArguments = args;
+var resolutionExitCode = 0;
+if (args.Length > 0)
+{
+    try
+    {
+        var resolution = await new TargetArgumentResolver(new ControllerTargetStore()).ResolveAsync(args);
+        if (resolution.Success)
+        {
+            dispatchArguments = resolution.Arguments;
+        }
+        else
+        {
+            await error.WriteLineAsync(resolution.Error);
+            resolutionExitCode = 2;
+        }
+    }
+    catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException)
+    {
+        await error.WriteLineAsync($"Unable to read controller target profiles: {exception.Message}");
+        resolutionExitCode = 1;
+    }
+}
+var exitCode = resolutionExitCode != 0
+    ? resolutionExitCode
+    : dispatchArguments.Length == 0
+        ? await WriteUsageAndReturnAsync(error)
+        : await DispatchAsync(dispatchArguments, output, error);
 
 if (!textMode)
 {
@@ -29,6 +55,7 @@ return exitCode;
 static Task<int> DispatchAsync(string[] arguments, TextWriter output, TextWriter error) => arguments[0] switch
 {
     "discover" => DiscoverCommand.RunAsync(arguments[1..], output, error),
+    "target" => TargetCommand.RunAsync(arguments[1..], output, error),
     "probe" => ProbeCommand.RunAsync(arguments[1..], output, error),
     "pair" => PairCommand.RunAsync(arguments[1..], Console.In, output, error),
     "exec" => ExecCommand.RunAsync(arguments[1..], output, error),
@@ -43,7 +70,7 @@ static Task<int> DispatchAsync(string[] arguments, TextWriter output, TextWriter
 static Task<int> WriteUsageAndReturnAsync(TextWriter error, string? command = null)
 {
     var prefix = command is null ? string.Empty : $"Unknown command: {command}. ";
-    error.WriteLine($"{prefix}Usage: rcctl discover ... | rcctl probe ... | rcctl pair ... | rcctl exec ... | rcctl job ... | rcctl fs ... | rcctl copy ... | rcctl ui ... | rcctl update ...");
+    error.WriteLine($"{prefix}Usage: rcctl target ... | rcctl discover ... | rcctl probe ... | rcctl pair ... | rcctl exec ... | rcctl job ... | rcctl fs ... | rcctl copy ... | rcctl ui ... | rcctl update ...");
     return Task.FromResult(2);
 }
 

@@ -29,7 +29,7 @@ WinAgentController 是面向 AI Agent 的 Windows 10/11 x64 远端控制软件�
 | 浏览器控制 | 已完成主要功能。`rcctl ui browser` 支持 Edge/Chrome 启动、导航和受控 Chromium CDP DOM/可访问性树读取；页面结构按窗口句柄和深度/元素数量限制返回。 |
 | 一键更新 | 已完成首版。控制端可构建清单、分块上传并触发更新；被控端校验包、记录状态和审计，并通过 Broker 执行带回滚的更新脚本。真实双节点升级、断线续传和失败回滚仍待验收。 |
 | 被控端一键初始化 | 已完成。发布包包含配置驱动的 `Setup-RemoteControllerAgent.cmd`；重复运行可刷新文件、重启 Broker/Agent，并按配置清除旧配对、重新生成 TLS 设备身份和一次性配对码。 |
-| CLI 与发布 | 已完成主要收口。CLI 提供 `ui` 命令组，非 `--text` 模式统一输出 JSON envelope；发布脚本包含 Agent、Broker、TaskHost、UiAgent、CLI 和 UI 验收程序。 |
+| CLI 与发布 | 已完成主要收口。CLI 提供 `target` 目标档案和 `ui` 命令组；目标档案保存已验证的设备 ID、最近端点与固定 TLS 指纹，并支持按发现结果安全刷新端点。非 `--text` 模式统一输出 JSON envelope；发布脚本包含 Agent、Broker、TaskHost、UiAgent、CLI 和 UI 验收程序。 |
 
 ## UI/浏览器验收证据
 
@@ -72,3 +72,10 @@ UI 自动化只在配置的活动登录用户会话中工作。锁屏、注销�
 - 根目录 `README.md`：用户入口，维护功能、部署、使用方法、命令、配置和安全声明。
 - `docs/CURRENT_PROGRESS.md`：维护实现状态、测试证据和剩余缺口。
 - UI/浏览器功能以源码、自动化测试和真实 VM 验收记录共同确认；不能仅凭契约类型或发布目录中的二进制文件宣称功能完成。
+
+## 2026-08-03 一键初始化退出码 1 诊断与修复
+
+- 根因已确认：`scripts/Setup-RemoteControllerAgent.ps1:232` 直接读取 `$identityResult.paired`，但 `Rc.Agent.exe identity` 实际只返回 `deviceId` 与 `certificateSha256Fingerprint`（见 `src/Rc.Agent/Security/LocalAdminCommand.cs:30-40`）。脚本启用了 `Set-StrictMode -Version Latest`，因此该不存在的属性触发 `PropertyNotFoundStrict`，最终由 `.cmd` 包装器显示退出码 1。
+- 修复：改为通过 `PSObject.Properties['paired']` 安全检查；当前 Agent 未提供该字段时输出“not reported”，不再让已完成的安装因汇总输出失败。
+- 验证：PowerShell AST 语法错误 0；发布包重新生成成功；源脚本与 `artifacts/publish` 脚本 SHA-256 一致；Release 构建 0 warning/0 error；四个测试程序集共 252/252 通过。
+- 尚未执行真实目标机的一键初始化重跑；该操作会停止服务并且默认配置 `RegenerateIdentity=true` 会轮换身份。需要在目标机复制新发布包后，按是否保留现有配对选择配置，再做真实链路验证。

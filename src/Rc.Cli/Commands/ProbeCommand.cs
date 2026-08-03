@@ -1,6 +1,5 @@
 using System.Net;
 using System.Security.Authentication;
-using System.Text;
 using System.Text.Json;
 using Rc.Cli.Security;
 using Rc.Contracts;
@@ -34,31 +33,17 @@ public static class ProbeCommand
 
         try
         {
-            await using var connection = await PinnedTlsConnection.ConnectAsync(endpoint, expectedFingerprint);
-            var tls = connection.Stream;
-
-            await using var writer = new StreamWriter(tls, new UTF8Encoding(false), 16 * 1024, leaveOpen: true) { AutoFlush = true };
-            using var reader = new StreamReader(tls, new UTF8Encoding(false), false, 16 * 1024, leaveOpen: true);
-            await writer.WriteLineAsync(JsonSerializer.Serialize(new ControlHelloRequest(1), ContractJson.Options));
-            var line = await reader.ReadLineAsync();
-            var response = line is null
-                ? null
-                : JsonSerializer.Deserialize<ResultEnvelope<ControlHelloResponse>>(line, ContractJson.Options);
-            if (response is not { Ok: true, Result: not null })
-            {
-                await error.WriteLineAsync("The agent did not return a valid hello response.");
-                return 1;
-            }
+            var response = await AgentProbeClient.ProbeAsync(endpoint, expectedFingerprint).ConfigureAwait(false);
 
             if (text)
             {
-                await output.WriteLineAsync($"deviceId: {response.Result.DeviceId}");
-                await output.WriteLineAsync($"fingerprint: {response.Result.CertificateSha256Fingerprint}");
-                await output.WriteLineAsync($"paired: {response.Result.HasPairedController}");
+                await output.WriteLineAsync($"deviceId: {response.DeviceId}");
+                await output.WriteLineAsync($"fingerprint: {response.CertificateSha256Fingerprint}");
+                await output.WriteLineAsync($"paired: {response.HasPairedController}");
             }
             else
             {
-                await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response.Result), ContractJson.Options));
+                await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
             }
 
             return 0;

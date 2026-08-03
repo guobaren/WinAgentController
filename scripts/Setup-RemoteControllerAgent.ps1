@@ -207,6 +207,7 @@ Write-Host "Device ID: $($identityResult.deviceId)"
 Write-Host "TLS SHA-256 fingerprint: $($identityResult.certificateSha256Fingerprint)"
 Write-Host 'The private key remains protected in the Agent data root and is not printed.'
 
+$pairingResult = $null
 if ($armPairing) {
     Write-Host '[5/5] Arming a one-time pairing code...'
     $pairingOutput = Invoke-AgentCommand $agentExe 'arm-pairing'
@@ -221,6 +222,26 @@ if ($armPairing) {
 
 Write-Host ''
 Write-Host '[OK] RemoteController Agent setup completed.'
+Write-Host '=== Setup information (copyable) ==='
+Write-Host "Device ID: $($identityResult.deviceId)"
+Write-Host "TLS SHA-256 fingerprint: $($identityResult.certificateSha256Fingerprint)"
+Write-Host "TCP port: $tcpPort"
+Write-Host "Install path: $installPath"
+Write-Host "Data root: $dataRoot"
+Write-Host "UI user: $uiUser"
+$pairedProperty = $identityResult.PSObject.Properties['paired']
+if ($null -ne $pairedProperty) {
+    Write-Host "Currently paired: $($pairedProperty.Value)"
+} else {
+    Write-Host 'Currently paired: not reported by the local identity command.'
+}
+if ($null -ne $pairingResult) {
+    Write-Host "Pairing code: $($pairingResult.oneTimeCode)"
+    Write-Host "Pairing code expires at (UTC): $($pairingResult.expiresAtUtc)"
+} else {
+    Write-Host 'Pairing code: not generated (ArmPairing=false)'
+}
+Write-Host 'The private key is not displayed and remains protected by the data-root ACL.'
 Write-Host 'Run this script again to refresh the package and restart services.'
 if ($regenerateIdentity) {
     Write-Host 'Because RegenerateIdentity=true, every run creates a new fingerprint and requires the Controller to pair again.'

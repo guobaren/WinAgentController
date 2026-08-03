@@ -258,6 +258,32 @@ $rcctl = 'C:\Tools\WinAgentController\Rc.Cli.exe'
 
 从可信的被控机控制台、受控资产登记或其他带外渠道核对指纹。不要仅依据 UDP 发现结果或他人发送的地址/指纹执行配对。
 
+### 控制端目标档案
+
+核对设备指纹后，可将设备保存为命名目标。`target add` 会先使用固定指纹建立 TLS 连接并读取设备 ID，验证成功后才写入档案：
+
+```powershell
+& $rcctl target add lab 192.168.1.50:43001 --fingerprint <64位SHA256指纹> --text
+& $rcctl target list --text
+& $rcctl target use lab --text
+```
+
+目标名可以直接代替原有的 `IP:port`，并自动提供已固定的 TLS 指纹；设置当前目标后还可以同时省略目标和指纹：
+
+```powershell
+& $rcctl probe lab --text
+& $rcctl exec lab --command 'hostname' --text
+& $rcctl exec --command 'hostname' --text
+```
+
+IP 变化后，可通过局域网发现刷新最近端点。刷新只接受设备 ID 与已保存 TLS 指纹同时匹配的公告，不会根据未认证发现结果替换指纹：
+
+```powershell
+& $rcctl target refresh lab --timeout-ms 4000 --text
+```
+
+档案默认保存在 `%LOCALAPPDATA%\RemoteController\targets.json`；设置 `RC_CONTROLLER_DATA_ROOT` 可更改目录。档案不包含配对码或控制端私钥。显式使用 `IP:port --fingerprint` 的原有命令保持兼容。
+
 ### 配对
 
 ```powershell
@@ -356,10 +382,14 @@ UI 命令使用与其他控制请求相同的 TLS 指纹固定和已配对会话
 
 ## 命令参考
 
-所有地址均使用 `IP:port`（例如 `192.168.1.50:43001`），指纹为 64 位十六进制 SHA-256 值，允许以冒号分隔。除显式 `--text` 的人类可读输出外，CLI 成功响应会输出 JSON 结果；失败会写入标准错误并返回非零退出码。
+远程命令可使用 `IP:port`（例如 `192.168.1.50:43001`）或控制端目标名。显式地址需要同时提供 64 位十六进制 SHA-256 指纹，允许以冒号分隔；目标名会从档案解析端点与固定指纹。除显式 `--text` 的人类可读输出外，CLI 成功响应会输出 JSON 结果；失败会写入标准错误并返回非零退出码。
 
 | 命令 | 用途与主要选项 |
 | --- | --- |
+| `rcctl target add <名称> <IP:port> --fingerprint <SHA256> [--text]` | 固定验证目标 TLS 指纹并保存设备 ID、端点和指纹。 |
+| `rcctl target list [--text]` | 列出控制端目标档案与当前目标。 |
+| `rcctl target use <名称> [--text]` | 设置后续命令省略端点时使用的当前目标。 |
+| `rcctl target refresh [名称] [--timeout-ms 1-60000] [--text]` | 按设备 ID 和既有指纹匹配发现结果并更新 IP 与端口。 |
 | `rcctl discover [--timeout-ms 1-60000] [--text]` | 监听 UDP 发现公告。 |
 | `rcctl probe <IP:port> --fingerprint <SHA256> [--text]` | 读取 Agent 的公开设备与配对状态，同时验证 TLS 指纹。 |
 | `rcctl pair <IP:port> --fingerprint <SHA256> [--name <名称>] [--code <一次性配对码>] [--text]` | 发起首次配对；省略 `--code` 时从标准输入读取一次性代码。 |
