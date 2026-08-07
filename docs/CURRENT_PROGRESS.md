@@ -25,7 +25,7 @@ WinAgentController 是面向 AI Agent 的 Windows 10/11 x64 远端控制软件�
 | 文件操作与可恢复传输 | 已完成首版。支持受限文件根目录、文件/目录清单、分块哈希、上传/下载和会话续传。 |
 | Privileged Broker 与 Windows 服务 | 已完成首版。Broker 使用 LocalSystem，Agent 使用 LocalService；安装脚本配置服务、SID ACL、防火墙和故障恢复。 |
 | UI Agent 会话代理 | 已完成。`Rc.UiAgent` 以指定登录用户运行，注册活动会话、显示器、窗口和能力版本，通过受 ACL 保护的命名管道接受 Agent 转发的请求。 |
-| 桌面 UI 自动化 | 已完成主要功能。支持显示器/窗口枚举、PNG 截图、激活/最小化/最大化/还原/关闭/移动、鼠标、键盘、快捷键、Unicode 文本、剪贴板，以及 UI Automation 元素树和 focus/invoke/setvalue/select/expand/collapse。 |
+| 桌面 UI 自动化 | 已完成主要功能。支持显示器/窗口枚举、PNG 截图、激活/最小化/最大化/还原/关闭/移动、鼠标、键盘、快捷键、Unicode 文本、剪贴板，以及 UI Automation 元素树和 focus/invoke/setvalue/select/expand/collapse。鼠标定位、鼠标按键和滚轮保持为独立基本操作：调用方先单独定位，再单独执行按键或滚轮。 |
 | 浏览器控制 | 已完成主要功能。`rcctl ui browser` 支持 Edge/Chrome 启动、导航和受控 Chromium CDP DOM/可访问性树读取；页面结构按窗口句柄和深度/元素数量限制返回。 |
 | 一键更新 | 已完成首版。控制端可构建清单、分块上传并触发更新；被控端校验包、记录状态和审计，并通过 Broker 执行带回滚的更新脚本。真实双节点升级、断线续传和失败回滚仍待验收。 |
 | 被控端一键初始化 | 已完成。发布包包含配置驱动的 `Setup-RemoteControllerAgent.cmd`；重复运行可刷新文件、重启 Broker/Agent，并按配置清除旧配对、重新生成 TLS 设备身份和一次性配对码。 |
@@ -39,7 +39,7 @@ WinAgentController 是面向 AI Agent 的 Windows 10/11 x64 远端控制软件�
 
 - UI Agent 登录任务、Agent/Broker 服务和受限管道正常运行；
 - 活动会话、显示器、窗口快照、有效 PNG 截图和 UI Automation 元素树可读取；
-- Invoke、SetValue、列表/下拉框选择、嵌套树展开/收起、鼠标移动/按键/拖动/滚轮、键盘和剪贴板路径已验证；
+- Invoke、SetValue、列表/下拉框选择、嵌套树展开/收起、鼠标移动/按键/拖动/滚轮、键盘和剪贴板路径已验证；鼠标验收明确把“移动定位”与后续按键、滚轮操作拆分并分别核对；
 - Edge 浏览器可启动并按窗口句柄导航；Chromium CDP DOM 可读取真实页面节点，而不是浏览器 `WebView`/`NativeViewHost` 外壳；
 - 已验证浏览器快捷键、地址栏导航和页面 DOM 内容读取。
 

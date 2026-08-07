@@ -73,11 +73,18 @@ public sealed class JobAndOperationContractTests
         var screenshot = new UiScreenshotRequest(window);
         var source = new byte[] { 4, 5 };
         var clipboard = new UiClipboardWriteRequest(source);
+        var clearedClipboard = new UiClipboardWriteRequest(Array.Empty<byte>());
         source[0] = 9;
 
         Assert.Equal("{\"target\":{\"kind\":\"window\",\"windowHandle\":123}}", JsonSerializer.Serialize(screenshot, ContractJson.Options));
         Assert.Equal("{\"data\":\"BAU=\",\"format\":\"text/plain\"}", JsonSerializer.Serialize(clipboard, ContractJson.Options));
+        var clearedClipboardJson = JsonSerializer.Serialize(clearedClipboard, ContractJson.Options);
+        var clearedClipboardRoundTrip = JsonSerializer.Deserialize<UiClipboardWriteRequest>(clearedClipboardJson, ContractJson.Options);
+        Assert.Equal("{\"data\":\"\",\"format\":\"text/plain\"}", clearedClipboardJson);
+        Assert.NotNull(clearedClipboardRoundTrip);
+        Assert.Empty(clearedClipboardRoundTrip.Data);
         Assert.Equal(new byte[] { 4, 5 }, clipboard.Data);
+        Assert.Empty(clearedClipboard.Data);
         Assert.Equal(0, display.DisplayIndex);
         Assert.Throws<ArgumentOutOfRangeException>(() => new DisplayTarget(-1));
         Assert.Throws<ArgumentOutOfRangeException>(() => new WindowTarget(0));

@@ -137,6 +137,7 @@ $script:windowHandle = [long]$testWindow[0].handle
 Write-Host "Testing visible UI window handle $script:windowHandle on $Endpoint."
 
 $originalClipboard = Invoke-Ui -UiArguments @('clipboard', $Endpoint, '--fingerprint', $Fingerprint, 'read')
+$originalClipboardBytes = [Convert]::FromBase64String([string]$originalClipboard.data)
 try {
     $reset = Get-Element 'UiTestResetButton'
     Invoke-ElementAction $reset 'invoke'
@@ -206,6 +207,10 @@ try {
         Wait-Step
         Assert-Verification "mouse:up:$mouseButton"
     }
+    # 鼠标定位与按键/滚轮操作保持分离：滚轮测试开始前先单独移动一次，
+    # 后续两次滚轮仅验证滚轮本身，不把定位动作混入每个滚轮步骤。
+    Invoke-Ui -UiArguments @('mouse', $Endpoint, '--fingerprint', $Fingerprint, 'move', 'window', "$script:windowHandle", "$mouseStartX", "$mouseStartY") | Out-Null
+    Wait-Step
     Invoke-Ui -UiArguments @('mouse', $Endpoint, '--fingerprint', $Fingerprint, 'wheel', 'window', "$script:windowHandle", '120') | Out-Null
     Wait-Step
     Assert-Verification 'mouse:wheel:up:4'
@@ -239,8 +244,14 @@ try {
     Write-Host '[PASS] clipboard:read-back'
 }
 finally {
-    $originalClipboardText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$originalClipboard.data))
-    Invoke-Ui -UiArguments @('clipboard', $Endpoint, '--fingerprint', $Fingerprint, 'write', $originalClipboardText) | Out-Null
+    if ($originalClipboardBytes.Length -eq 0) {
+        # 不依赖 Windows PowerShell 将空字符串原样传给原生 rcctl；使用显式 clear 保留空剪贴板语义。
+        Invoke-Ui -UiArguments @('clipboard', $Endpoint, '--fingerprint', $Fingerprint, 'clear') | Out-Null
+    }
+    else {
+        $originalClipboardText = [Text.Encoding]::UTF8.GetString($originalClipboardBytes)
+        Invoke-Ui -UiArguments @('clipboard', $Endpoint, '--fingerprint', $Fingerprint, 'write', $originalClipboardText) | Out-Null
+    }
 }
 
 Write-Host ''

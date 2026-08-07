@@ -74,6 +74,7 @@ public static class UiCommand
             "shortcut" when args.Length >= 5 => await SendAsync<UiSnapshotResponse>(endpoint, fingerprint, UiOperationKinds.Shortcut, new UiShortcutRequest(ParseTarget(args[1], args[2]), args.Skip(3).ToArray())).ConfigureAwait(false),
             "type" when args.Length == 4 => await SendAsync<UiSnapshotResponse>(endpoint, fingerprint, UiOperationKinds.Text, new UiTextRequest(ParseTarget(args[1], args[2]), args[3])).ConfigureAwait(false),
             "clipboard" when args.Length == 2 && args[1] == "read" => await SendAsync<UiClipboardReadResponse>(endpoint, fingerprint, UiOperationKinds.ClipboardRead, new UiClipboardReadRequest()).ConfigureAwait(false),
+            "clipboard" when args.Length == 2 && args[1] == "clear" => await SendAsync<UiClipboardWriteResponse>(endpoint, fingerprint, UiOperationKinds.ClipboardWrite, new UiClipboardWriteRequest(Array.Empty<byte>())).ConfigureAwait(false),
             "clipboard" when args.Length == 3 && args[1] == "write" => await SendAsync<UiClipboardWriteResponse>(endpoint, fingerprint, UiOperationKinds.ClipboardWrite, new UiClipboardWriteRequest(Encoding.UTF8.GetBytes(args[2]))).ConfigureAwait(false),
             "elements" => await ExecuteElementsAsync(args, endpoint, fingerprint).ConfigureAwait(false),
             "element" => await ExecuteElementActionAsync(args, endpoint, fingerprint).ConfigureAwait(false),

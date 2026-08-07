@@ -165,15 +165,26 @@ catch {
 $installer = Join-Path $sourcePath 'Install-RemoteController.ps1'
 $agentExe = Join-Path $installPath 'Rc.Agent.exe'
 if (-not (Test-Path -LiteralPath (Join-Path $sourcePath 'Rc.Agent.exe') -PathType Leaf)) {
-    $repositoryPackage = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\artifacts\publish'))
-    if (Test-Path -LiteralPath (Join-Path $repositoryPackage 'Rc.Agent.exe') -PathType Leaf) {
+    # When this script runs from the copied publish package, the package itself
+    # is the first fallback. When it runs from scripts/, use the repository
+    # artifacts\publish directory instead.
+    $packageCandidates = @(
+        [IO.Path]::GetFullPath($PSScriptRoot),
+        [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\artifacts\publish'))
+    ) | Select-Object -Unique
+    $repositoryPackage = $packageCandidates | Where-Object {
+        Test-Path -LiteralPath (Join-Path $_ 'Rc.Agent.exe') -PathType Leaf
+    } | Select-Object -First 1
+    if ($null -ne $repositoryPackage) {
         $sourcePath = $repositoryPackage
-        $installer = Join-Path $PSScriptRoot 'Install-RemoteController.ps1'
+        $installer = Join-Path $repositoryPackage 'Install-RemoteController.ps1'
         Write-Host "Using repository publish package: $sourcePath"
     }
 }
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Missing installer: $installer" }
-if (-not (Test-Path -LiteralPath (Join-Path $sourcePath 'Rc.Agent.exe') -PathType Leaf)) { throw "Missing package artifact: Rc.Agent.exe" }
+if (-not (Test-Path -LiteralPath (Join-Path $sourcePath 'Rc.Agent.exe') -PathType Leaf)) {
+    throw "Missing package artifact: Rc.Agent.exe. Checked source path: $sourcePath"
+}
 
 Write-Host "Using configuration: $script:ConfigPath"
 Write-Host "Source package: $sourcePath"

@@ -49,6 +49,7 @@
 - **任务可恢复：** 通过结构化结果执行命令、管理持久任务、增量读取日志、写入标准输入、取消任务和等待终态，连接中断后仍可继续查询；
 - **数据可续传：** 在受限文件根目录内列举、读取、写入和传输文件或目录，并通过传输会话、分块哈希和会话 ID 完成续传与完整性校验；
 - **界面可理解：** 优先使用 Windows UI Automation 元素和 Chromium DOM 读取页面语义，必要时才使用显式窗口目标、鼠标或键盘操作，而不是依赖屏幕坐标猜测；
+- **输入操作可分离：** 鼠标定位、鼠标按键和滚轮是可独立组合的基本操作；按键或滚轮命令不会隐式移动鼠标，调用方应先单独移动到显式目标区域，再单独执行并验证按键或滚轮操作；
 - **权限可审计：** 普通任务与显式提权任务采用不同执行路径，高风险操作必须由调用方主动选择，并由本地 Broker、ACL 和审计记录约束。
 
 真实双机 VM 验收记录见 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md)。
@@ -367,6 +368,8 @@ UI 命令使用与其他控制请求相同的 TLS 指纹固定和已配对会话
 & $rcctl ui mouse 192.168.1.50:43001 --fingerprint <SHA256> move window <handle> 200 120
 & $rcctl ui shortcut 192.168.1.50:43001 --fingerprint <SHA256> window <handle> Control L
 & $rcctl ui clipboard 192.168.1.50:43001 --fingerprint <SHA256> write 'https://example.com'
+# 清空文本剪贴板；不要依赖空字符串作为原生命令参数。
+& $rcctl ui clipboard 192.168.1.50:43001 --fingerprint <SHA256> clear
 & $rcctl ui clipboard 192.168.1.50:43001 --fingerprint <SHA256> read --text
 
 # 浏览器：启动后使用返回的窗口句柄继续导航和读取 DOM。
@@ -412,9 +415,9 @@ UI 命令使用与其他控制请求相同的 TLS 指纹固定和已配对会话
 | `rcctl ui screenshot <IP:port> --fingerprint <SHA256> <display\|window> <目标>` | 获取指定显示器或窗口的 PNG 截图。 |
 | `rcctl ui window <IP:port> --fingerprint <SHA256> window <句柄> <activate\|minimize\|maximize\|restore\|close>` | 控制窗口状态。 |
 | `rcctl ui move <IP:port> --fingerprint <SHA256> window <句柄> <x> <y> <width> <height>` | 移动并调整窗口大小。 |
-| `rcctl ui mouse <IP:port> --fingerprint <SHA256> <move\|button\|wheel> ...` | 在显式显示器/窗口目标上执行鼠标操作。 |
+| `rcctl ui mouse <IP:port> --fingerprint <SHA256> <move\|button\|wheel> ...` | 在显式显示器/窗口目标上执行鼠标操作；`move`、`button`、`wheel` 相互独立，按键或滚轮前应先单独 `move` 到目标区域。 |
 | `rcctl ui key\|shortcut\|type <IP:port> --fingerprint <SHA256> ...` | 投递按键、快捷键或 Unicode 文本；可靠控件赋值优先使用 `ui element ... setvalue`。 |
-| `rcctl ui clipboard read\|write <IP:port> --fingerprint <SHA256> ...` | 读写活动 UI 会话的文本剪贴板。 |
+| `rcctl ui clipboard read\|write\|clear <IP:port> --fingerprint <SHA256> ...` | 读取、写入或清空活动 UI 会话的文本剪贴板。 |
 | `rcctl ui elements\|element <IP:port> --fingerprint <SHA256> window <句柄> ...` | 获取 UI Automation 元素树，或按 runtime ID 执行 focus、invoke、setvalue、select、expand、collapse。 |
 | `rcctl ui browser <IP:port> --fingerprint <SHA256> launch\|navigate\|dom ...` | 启动/导航 Edge 或 Chrome，并读取受控浏览器的 DOM。 |
 | `Rc.Agent.exe unpair` | **在被控机本地**删除现有控制端配对并使待配对邀请失效。 |
