@@ -5,6 +5,6 @@
   "TcpPort": 43001,
   "UiUser": "",
   "NoFirewallRule": false,
-  "RegenerateIdentity": true,
+  "RegenerateIdentity": false,
   "ArmPairing": true
 }

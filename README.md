@@ -195,7 +195,7 @@ Setup-RemoteControllerAgent.cmd
 | `TcpPort` | Agent TCP 端口，默认 `43001`。 |
 | `UiUser` | UI Agent 登录用户；留空时使用当前管理员账户。 |
 | `NoFirewallRule` | 是否跳过 Private/Domain 入站防火墙规则。 |
-| `RegenerateIdentity` | 默认 `true`。每次运行先停止服务、清除旧配对并重新生成 TLS 证书/私钥，因此每次都会得到新指纹，控制端必须重新配对。设为 `false` 可仅刷新并重启服务、保留现有身份。 |
+| `RegenerateIdentity` | 默认 `false`。运行时仅刷新并重启服务、保留现有 TLS 身份和配对。只有明确需要轮换证书时才设为 `true`；启用后会清除旧配对并生成新指纹，控制端必须重新配对。 |
 | `ArmPairing` | 默认 `true`，生成 10 分钟有效的一次性配对码。 |
 
 脚本具备重复运行保护：每次运行都会先刷新安装文件并停止/启动 Broker、Agent 服务；启用 `RegenerateIdentity` 时会先本地解除旧控制端配对，再由 Agent 在服务重启时生成新的设备身份。私钥只保存在受 ACL 保护的数据目录中，不会打印到控制台。脚本会自动请求管理员权限。

@@ -1,81 +1,67 @@
 # WinAgentController 当前进度
 
-## 2026-07-16 本地完整测试已知失败
+- 更新时间：2026-08-07
+- 基线提交：`dd46be0 fix: 修复 UI 剪贴板恢复与输入操作分离`
+- 事实来源优先级：当前实现与 CLI 用法 > 部署脚本 > `README.md` > 历史记录。
 
-- Release 构建通过：0 warning、0 error。
-- 完整测试共 234 项，其中 233 项通过，1 项失败。
-- 失败项：`Rc.TaskHost.Tests.TaskHostRunnerTests.PseudoConsoleCancellationForceKillsAfterGraceWhenInterruptIsIgnored`。
-- 本机使用 .NET SDK 10.0.301 执行 `net8.0-windows` 测试时，该用例配置 200ms 取消宽限期，但连续三次分别约 148ms、133ms、148ms 返回，未达到断言要求的 150ms 下限。
-- 该失败目前作为任务取消/ConPTY 时序回归项保留，尚未修改生产取消语义或降低断言；需要在目标 .NET 8 SDK 和 CI/VM 环境复核后单独处理。
+## 当前结论
 
-> 最后核对：2026-07-16
->
-> 本文件是仓库唯一的进度与验收记录；用户功能、部署流程、命令参考和安全声明统一维护在根目录 [README.md](../README.md)。
+WinAgentController 已具备局域网发现、TLS 指纹固定、单控制端配对、普通/提权命令、持久任务、受限文件传输、桌面 UI 自动化、Chromium 浏览器控制和完整包更新能力。当前源码与本地发布目录的主要验证已完成；正式安装目录和跨机器目标仍需使用同一最新完整包复验。
 
-## 当前定位
-
-WinAgentController 是面向 AI Agent 的 Windows 10/11 x64 远端控制软件。控制端通过已配对、证书指纹固定的 TLS 会话控制受管端 Agent；受管端再将普通任务、显式提权任务和登录用户桌面 UI 操作分发到隔离的本地进程。
-
-## 已完成能力
+## 能力状态
 
 | 范围 | 当前状态 |
 | --- | --- |
-| 局域网发现、TLS 指纹探测、一次性配对和签名会话认证 | 已完成。Agent 只保存一个控制端，配对关系可在受管端本地撤销。 |
-| 单次命令和持久化任务 | 已完成。支持 PowerShell/cmd、普通/显式提权、stdin、日志 offset/跟随、取消、等待、PTY resize 和 TaskHost 恢复语义。 |
-| 文件操作与可恢复传输 | 已完成首版。支持受限文件根目录、文件/目录清单、分块哈希、上传/下载和会话续传。 |
-| Privileged Broker 与 Windows 服务 | 已完成首版。Broker 使用 LocalSystem，Agent 使用 LocalService；安装脚本配置服务、SID ACL、防火墙和故障恢复。 |
-| UI Agent 会话代理 | 已完成。`Rc.UiAgent` 以指定登录用户运行，注册活动会话、显示器、窗口和能力版本，通过受 ACL 保护的命名管道接受 Agent 转发的请求。 |
-| 桌面 UI 自动化 | 已完成主要功能。支持显示器/窗口枚举、PNG 截图、激活/最小化/最大化/还原/关闭/移动、鼠标、键盘、快捷键、Unicode 文本、剪贴板，以及 UI Automation 元素树和 focus/invoke/setvalue/select/expand/collapse。鼠标定位、鼠标按键和滚轮保持为独立基本操作：调用方先单独定位，再单独执行按键或滚轮。 |
-| 浏览器控制 | 已完成主要功能。`rcctl ui browser` 支持 Edge/Chrome 启动、导航和受控 Chromium CDP DOM/可访问性树读取；页面结构按窗口句柄和深度/元素数量限制返回。 |
-| 一键更新 | 已完成首版。控制端可构建清单、分块上传并触发更新；被控端校验包、记录状态和审计，并通过 Broker 执行带回滚的更新脚本。真实双节点升级、断线续传和失败回滚仍待验收。 |
-| 被控端一键初始化 | 已完成。发布包包含配置驱动的 `Setup-RemoteControllerAgent.cmd`；重复运行可刷新文件、重启 Broker/Agent，并按配置清除旧配对、重新生成 TLS 设备身份和一次性配对码。 |
-| CLI 与发布 | 已完成主要收口。CLI 提供 `target` 目标档案和 `ui` 命令组；目标档案保存已验证的设备 ID、最近端点与固定 TLS 指纹，并支持按发现结果安全刷新端点。非 `--text` 模式统一输出 JSON envelope；发布脚本包含 Agent、Broker、TaskHost、UiAgent、CLI 和 UI 验收程序。 |
+| 发现、探测与配对 | 已实现。发现仅用于定位；信任来自独立核对的 TLS SHA-256 指纹、一次性代码和已配对控制端身份。 |
+| 命令与持久任务 | 已实现。支持 PowerShell/cmd、普通/显式提权、stdin、日志续读、等待、取消和 PTY。 |
+| 文件操作与续传 | 已实现首版。远端路径受 `RC_AGENT_FILE_ROOT` 限制，支持分块哈希和会话续传。 |
+| Agent/Broker 服务 | 已实现。Agent 使用 LocalService，Privileged Broker 使用 LocalSystem；提权请求需经过已认证控制链路。 |
+| UI Agent | 已实现。仅控制配置用户的活动、解锁登录会话，不覆盖锁屏、Winlogon 或 UAC 安全桌面。 |
+| UI 自动化 | 已实现主要功能。支持窗口、截图、UI Automation、鼠标、键盘和剪贴板。鼠标 move、button、wheel 是三个独立操作。 |
+| 浏览器控制 | 已实现 Chromium 主要链路。支持 Edge/Chrome 启动、导航和受控 CDP DOM 读取。 |
+| 目标档案 | 已实现。档案保存名称、设备 ID、最近端点和固定指纹；刷新只能在设备 ID 与指纹同时匹配时更新端点。 |
+| 更新与部署 | 已实现首版。完整包更新支持清单、分块传输、状态查询和脚本回滚；更多真实双节点失败场景仍待覆盖。 |
 
-## UI/浏览器验收证据
+## 当前验证矩阵
 
-**真实双机 Hyper-V VM UI 验收已完成（2026-07-16）。** Controller 在主机侧通过已配对的 TLS 控制通道连接 Windows VM，受管端测试程序在 VM 的活动登录桌面中运行；不是同进程、单元测试或仅针对发布目录二进制的模拟验证。
+| 类别 | 结果 | 当前证据与边界 |
+| --- | --- | --- |
+| Release Build / Publish | Pass | Windows x64 自包含完整包已成功生成；所需可执行文件与部署脚本齐全。 |
+| 单元测试 | Pass | 本次实际运行 253/253：Contracts 118、TaskHost 15、PrivilegedBroker 3、Agent 117。因本机缺少固定 SDK 8.0.422，先 restore，再从仓库外使用 SDK 10.0.301 执行。 |
+| Lint | 未配置 | 项目没有独立 lint 命令；不把编译成功表述为 Lint 0 errors。 |
+| 测试覆盖率 | 未配置 | 当前没有覆盖率配置或报告。 |
+| 本机可见 UI 验收 | Pass | 单 UiAgent、最新发布目录链路为 25/25；空剪贴板恢复立即和延迟读回均为 0 字节。 |
+| 输入操作分离 | Pass | UI 验收先单独 move，再分别验证 button 和 wheel；滚轮上/下均通过。 |
+| 历史 Hyper-V 双机验收 | Pass | 2026-07-16 已验证 UI Automation 25 项、浏览器 DOM、服务恢复、提权、持久任务与文件续传。 |
+| 当前跨机器认证与列表命令 | Partial | 用户确认身份变更并提供新的一次性码后，重新配对成功；新 CLI 的 `job list`、状态过滤和 `fs list` 实测通过。测试任务最终 `FailedToStart`，原因为 TaskHost 控制管道 10 秒内未就绪，因此任务执行链路仍为 Failed。 |
+| `target` 四子命令实测 | Pass | 在隔离档案中，`add`、`list`、`use` 均退出码 0 且返回/持久状态符合预期；`refresh` 首次因普通终端无权启用 UDP 43000 防火墙规则失败，随后由 Windows `RunAs` 提权 PowerShell 重测退出码 0，并返回同一设备 ID、固定指纹和端点。 |
+| 目标档案自动登记 | 未实现 | `target list` 只读取控制端 `targets.json`；pair、probe 和普通认证连接成功均不会自动 add。本次重新配对 `.50` 后实测正式列表仍只有既有 `.47` 档案。 |
+| Setup 身份默认值 | Changed | `RemoteController.Agent.config.json` 与 Setup 缺省回退均改为 `RegenerateIdentity=false`；需显式设为 `true` 才轮换身份。 |
+| 最新正式安装目录复验 | 未执行 | `dd46be0` 对应完整包尚未在目标安装目录刷新并完成跨机器 25/25。 |
 
-已在主机 + Hyper-V Windows VM 的独立登录会话中验证：
+## 当前缺口
 
-- UI Agent 登录任务、Agent/Broker 服务和受限管道正常运行；
-- 活动会话、显示器、窗口快照、有效 PNG 截图和 UI Automation 元素树可读取；
-- Invoke、SetValue、列表/下拉框选择、嵌套树展开/收起、鼠标移动/按键/拖动/滚轮、键盘和剪贴板路径已验证；鼠标验收明确把“移动定位”与后续按键、滚轮操作拆分并分别核对；
-- Edge 浏览器可启动并按窗口句柄导航；Chromium CDP DOM 可读取真实页面节点，而不是浏览器 `WebView`/`NativeViewHost` 外壳；
-- 已验证浏览器快捷键、地址栏导航和页面 DOM 内容读取。
+1. 诊断目标 `TaskHost did not open its control pipe within ten seconds`，核对目标安装目录二进制版本、服务/进程和控制管道权限后重跑无副作用任务。
+2. 使用最新完整发布包刷新目标安装目录，并设置 `RegenerateIdentity=false` 保留重新确认后的身份和配对，然后重跑跨机器 UI 25/25。
+3. 继续验证更新中断、断线续传、失败回滚、服务账户切换和卸载的数据保留边界。
+4. 扩展不同 Windows、浏览器、输入法、锁屏/解锁切换和复杂 UI Automation 树的兼容性回归。
+5. 增加磁盘/配额耗尽、恶意配对压力、审计异常与多节点压力测试。
+6. 建立覆盖率报告、Windows CI、发布制品哈希与第三方许可清单。
+7. 补齐 `global.json` 固定的 .NET SDK 8.0.422，并在官方工具链下复跑 Build/Test，消除 SDK 10 workaround。
 
-本次真实双机 UI 验收使用 `E:\WinAgentController\scripts\Test-RemoteControllerUi.ps1`，共通过 25 项检查：控件调用、值写入、下拉框和树节点、鼠标三键/拖拽/滚轮、键盘输入以及剪贴板写入和回读。
+## 历史里程碑
 
-**真实双机 Hyper-V VM 多轮交互任务验收已完成（2026-07-16）。** Controller 通过已配对的远程控制通道，在对端 `E:\WinAgentController` 项目目录下启动 `Rc.InteractiveTestApp.exe` 的 PTY 持久任务，完成两轮历史计数与随机挑战输入：第一次 `HISTORICAL_RUN_COUNT=0` 成功后计数为 1，第二次读取计数 1 并成功后计数为 2；每轮均先提交历史计数、再提交程序实时生成的随机数，两轮均返回 `RESULT: PASS`、退出码 0。
-
-UI 自动化只在配置的活动登录用户会话中工作。锁屏、注销、没有活动桌面、UAC 安全桌面和 Winlogon 界面不属于支持范围。
-
-## 测试状态
-
-最新发布验收记录显示：
-
-- Release 构建通过，0 warning、0 error；
-- UI 合约、UI Agent 管道代理、Chromium DOM 映射和 UI 测试程序均有自动化测试；
-- 主机 + Hyper-V VM 核心验收已通过，包括本次真实双机 UI Automation 25 项检查、浏览器启动/导航/DOM、服务恢复、提权、持久化任务和文件续传；
-- 真实双机 Hyper-V VM 多轮标准输入持久任务已通过：对端项目目录下连续完成两次历史计数/随机挑战交互，状态文件从 0 正确递增到 2，任务输出和终态均可通过 Controller 读取；
-- 当前完整测试统计见本文顶部“2026-07-16 本地完整测试已知失败”。历史上曾有 218 项通过、3 项因 Codex 沙箱 Schannel 客户端凭据创建失败而未通过；该旧记录不再代表当前测试状态，也不能代表真实 VM 网络验收失败。
-
-## 尚待继续的工作
-
-1. 在更多 Windows 版本、浏览器版本和输入法环境中完成完整 UI 回归，尤其是键盘文本输入、剪贴板和复杂元素树。
-2. 继续验证 Edge/Chrome 页面 DOM 的兼容性；非 Chromium 浏览器的导航/窗口控制不等同于 Chromium CDP DOM 读取能力。
-3. 完成一键升级、安装、卸载、登录任务重启和服务账户切换的更多真实环境回归，覆盖断线重连、失败回滚和配对保留。
-4. 补充磁盘耗尽、配额耗尽、恶意配对码压力、审计异常分支和多节点压力测试。
-5. 继续保持 Windows CI、发布制品哈希校验、第三方许可清单和版本发布说明同步。
+| 日期 | 里程碑 | 当前解释 |
+| --- | --- | --- |
+| 2026-07-16 | 234 项测试中 1 项 ConPTY 取消时序失败；完成 Hyper-V 双机核心/UI 验收。 | 该测试统计已被后续 253/253 记录取代；保留为历史时序风险，不代表当前构建失败。 |
+| 2026-08-03 | 修复一键初始化在 StrictMode 下读取缺失 `paired` 属性导致的尾部退出码 1。 | 修复已进入当前分支；真实部署仍须区分脚本成功与服务/控制链路验收。 |
+| 2026-08-04 | 完成目标档案和重复指纹参数拒绝。 | 功能已进入当前实现，不再标记为“仅规划”。 |
+| 2026-08-07 | 完成初始化提升输出、空剪贴板恢复和鼠标输入操作分离；本机 UI 25/25。 | 当前源码基线；跨机器目标需更新同版本完整包后复验。 |
 
 ## 文档约定
 
-- 根目录 `README.md`：用户入口，维护功能、部署、使用方法、命令、配置和安全声明。
-- `docs/CURRENT_PROGRESS.md`：维护实现状态、测试证据和剩余缺口。
-- UI/浏览器功能以源码、自动化测试和真实 VM 验收记录共同确认；不能仅凭契约类型或发布目录中的二进制文件宣称功能完成。
-
-## 2026-08-03 一键初始化退出码 1 诊断与修复
-
-- 根因已确认：`scripts/Setup-RemoteControllerAgent.ps1:232` 直接读取 `$identityResult.paired`，但 `Rc.Agent.exe identity` 实际只返回 `deviceId` 与 `certificateSha256Fingerprint`（见 `src/Rc.Agent/Security/LocalAdminCommand.cs:30-40`）。脚本启用了 `Set-StrictMode -Version Latest`，因此该不存在的属性触发 `PropertyNotFoundStrict`，最终由 `.cmd` 包装器显示退出码 1。
-- 修复：改为通过 `PSObject.Properties['paired']` 安全检查；当前 Agent 未提供该字段时输出“not reported”，不再让已完成的安装因汇总输出失败。
-- 验证：PowerShell AST 语法错误 0；发布包重新生成成功；源脚本与 `artifacts/publish` 脚本 SHA-256 一致；Release 构建 0 warning/0 error；四个测试程序集共 252/252 通过。
-- 尚未执行真实目标机的一键初始化重跑；该操作会停止服务并且默认配置 `RegenerateIdentity=true` 会轮换身份。需要在目标机复制新发布包后，按是否保留现有配对选择配置，再做真实链路验证。
+- `README.md`：用户入口，维护功能、部署、命令和安全边界。
+- `docs/CURRENT_PROGRESS.md`：当前能力、验证证据和剩余缺口。
+- `docs/交接.md`：当前目标、最近完成项和前三项执行路线。
+- `docs/审计.md`：当前质量矩阵、已知风险、技术债和信心边界。
+- 历史失败只有仍能解释当前风险时才保留；已被后续证据取代的过程日志压缩为里程碑，不重复追加整段审计。
