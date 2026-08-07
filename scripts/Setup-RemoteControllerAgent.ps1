@@ -37,11 +37,34 @@ function Assert-Administrator {
     }
 }
 
+function Quote-PowerShellLiteral([string]$Value) {
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
 function Invoke-ElevatedSelf {
-    $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -ConfigPath "{1}"' -f $PSCommandPath, $script:ConfigPath
-    $process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
-        -ArgumentList $arguments -Verb RunAs -Wait -PassThru
-    exit $process.ExitCode
+    $outputPath = Join-Path ([IO.Path]::GetTempPath()) ("RemoteControllerAgentSetup-{0}.log" -f [Guid]::NewGuid().ToString('N'))
+    $scriptLiteral = Quote-PowerShellLiteral $PSCommandPath
+    $configLiteral = Quote-PowerShellLiteral $script:ConfigPath
+    $outputLiteral = Quote-PowerShellLiteral $outputPath
+    $command = "& $scriptLiteral -ConfigPath $configLiteral *> $outputLiteral; exit `$LASTEXITCODE"
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $exitCode = 1
+
+    try {
+        $process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand) `
+            -Verb RunAs -Wait -PassThru
+        $exitCode = $process.ExitCode
+
+        if (Test-Path -LiteralPath $outputPath -PathType Leaf) {
+            Get-Content -LiteralPath $outputPath | ForEach-Object { Write-Host $_ }
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+    }
+
+    exit $exitCode
 }
 
 function Stop-ManagedService([string]$ServiceName) {

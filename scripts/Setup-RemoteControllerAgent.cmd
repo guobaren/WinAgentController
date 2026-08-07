@@ -1,10 +1,13 @@
 @echo off
 setlocal EnableExtensions
 
-if /I not "%~1"=="__RUN_SETUP" (
-    start "RemoteController Agent Setup" cmd.exe /d /k call "%~f0" __RUN_SETUP "%~1"
-    exit /b 0
-)
+if /I "%~1"=="__RUN_SETUP" goto :run_setup
+
+call "%~f0" __RUN_SETUP "%~1"
+set "EXIT_CODE=%ERRORLEVEL%"
+exit /b %EXIT_CODE%
+
+:run_setup
 
 set "CONFIG_PATH=%~2"
 if "%CONFIG_PATH%"=="" set "CONFIG_PATH=%~dp0RemoteController.Agent.config.json"
