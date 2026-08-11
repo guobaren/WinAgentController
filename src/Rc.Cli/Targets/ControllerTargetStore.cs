@@ -66,11 +66,9 @@ internal sealed class ControllerTargetStore
 
         var document = await LoadAsync(cancellationToken).ConfigureAwait(false);
         var existing = document.Targets.FirstOrDefault(target => string.Equals(target.Name, name, StringComparison.OrdinalIgnoreCase));
-        if (existing is not null &&
-            (!string.Equals(existing.DeviceId, deviceId, StringComparison.Ordinal) ||
-             !string.Equals(existing.CertificateSha256Fingerprint, fingerprint, StringComparison.Ordinal)))
+        if (existing is not null && !string.Equals(existing.DeviceId, deviceId, StringComparison.Ordinal))
         {
-            throw new InvalidOperationException($"Target '{name}' is already pinned to a different device or TLS fingerprint.");
+            throw new InvalidOperationException($"Target '{name}' is already pinned to a different device.");
         }
 
         var profile = new ControllerTargetProfile(name, deviceId, endpoint.ToString(), fingerprint, DateTimeOffset.UtcNow);
@@ -83,6 +81,59 @@ internal sealed class ControllerTargetStore
             document.Targets[document.Targets.IndexOf(existing)] = profile;
         }
 
+        RemoveSupersededFingerprints(document, profile);
+        document.CurrentTarget ??= profile.Name;
+        await SaveAsync(document, cancellationToken).ConfigureAwait(false);
+        return profile;
+    }
+
+    public async Task<ControllerTargetProfile> RememberSuccessfulConnectionAsync(
+        string deviceId,
+        IPEndPoint endpoint,
+        string fingerprint,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(deviceId);
+        ArgumentNullException.ThrowIfNull(endpoint);
+        fingerprint = TargetValueParser.NormalizeFingerprint(fingerprint)
+            ?? throw new ArgumentException("The certificate fingerprint must be a 64-character SHA-256 hexadecimal value.", nameof(fingerprint));
+
+        var document = await LoadAsync(cancellationToken).ConfigureAwait(false);
+        var existing = document.Targets.FirstOrDefault(target =>
+            string.Equals(target.DeviceId, deviceId, StringComparison.Ordinal) &&
+            string.Equals(target.CertificateSha256Fingerprint, fingerprint, StringComparison.Ordinal));
+        if (existing is not null)
+        {
+            var refreshed = existing with { Endpoint = endpoint.ToString(), UpdatedAtUtc = DateTimeOffset.UtcNow };
+            document.Targets[document.Targets.IndexOf(existing)] = refreshed;
+            RemoveSupersededFingerprints(document, refreshed);
+            await SaveAsync(document, cancellationToken).ConfigureAwait(false);
+            return refreshed;
+        }
+
+        var sameDeviceTargets = document.Targets
+            .Where(target => string.Equals(target.DeviceId, deviceId, StringComparison.Ordinal))
+            .ToArray();
+        if (sameDeviceTargets.Length > 0)
+        {
+            var retained = sameDeviceTargets.FirstOrDefault(target =>
+                    string.Equals(target.Name, document.CurrentTarget, StringComparison.OrdinalIgnoreCase))
+                ?? sameDeviceTargets[0];
+            var replaced = retained with
+            {
+                Endpoint = endpoint.ToString(),
+                CertificateSha256Fingerprint = fingerprint,
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+            };
+            document.Targets[document.Targets.IndexOf(retained)] = replaced;
+            RemoveSupersededFingerprints(document, replaced);
+            await SaveAsync(document, cancellationToken).ConfigureAwait(false);
+            return replaced;
+        }
+
+        var name = CreateAutomaticName(deviceId, fingerprint, document.Targets);
+        var profile = new ControllerTargetProfile(name, deviceId, endpoint.ToString(), fingerprint, DateTimeOffset.UtcNow);
+        document.Targets.Add(profile);
         document.CurrentTarget ??= profile.Name;
         await SaveAsync(document, cancellationToken).ConfigureAwait(false);
         return profile;
@@ -185,6 +236,64 @@ internal sealed class ControllerTargetStore
             name.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.')))
         {
             throw new ArgumentException("Target names must contain 1-64 ASCII letters, digits, dots, underscores, or hyphens.", nameof(name));
+        }
+    }
+
+    private static void RemoveSupersededFingerprints(TargetDocument document, ControllerTargetProfile retained)
+    {
+        var superseded = document.Targets
+            .Where(target =>
+                !ReferenceEquals(target, retained) &&
+                !string.Equals(target.Name, retained.Name, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(target.DeviceId, retained.DeviceId, StringComparison.Ordinal) &&
+                !string.Equals(target.CertificateSha256Fingerprint, retained.CertificateSha256Fingerprint, StringComparison.Ordinal))
+            .ToArray();
+        if (superseded.Length == 0)
+        {
+            return;
+        }
+
+        if (document.CurrentTarget is not null && superseded.Any(target =>
+                string.Equals(target.Name, document.CurrentTarget, StringComparison.OrdinalIgnoreCase)))
+        {
+            document.CurrentTarget = retained.Name;
+        }
+        foreach (var target in superseded)
+        {
+            document.Targets.Remove(target);
+        }
+    }
+
+    private static string CreateAutomaticName(
+        string deviceId,
+        string fingerprint,
+        IReadOnlyCollection<ControllerTargetProfile> targets)
+    {
+        var normalizedDeviceId = new string(deviceId
+            .Where(char.IsAsciiLetterOrDigit)
+            .Take(16)
+            .Select(char.ToLowerInvariant)
+            .ToArray());
+        var stem = $"agent-{(normalizedDeviceId.Length == 0 ? fingerprint[..12].ToLowerInvariant() : normalizedDeviceId)}";
+        if (!targets.Any(target => string.Equals(target.Name, stem, StringComparison.OrdinalIgnoreCase)))
+        {
+            return stem;
+        }
+
+        var fingerprintSuffix = fingerprint[..8].ToLowerInvariant();
+        var candidate = $"{stem}-{fingerprintSuffix}";
+        if (!targets.Any(target => string.Equals(target.Name, candidate, StringComparison.OrdinalIgnoreCase)))
+        {
+            return candidate;
+        }
+
+        for (var suffix = 2; ; suffix++)
+        {
+            candidate = $"{stem}-{fingerprintSuffix}-{suffix}";
+            if (!targets.Any(target => string.Equals(target.Name, candidate, StringComparison.OrdinalIgnoreCase)))
+            {
+                return candidate;
+            }
         }
     }
 

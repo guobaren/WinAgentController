@@ -12,12 +12,11 @@ namespace Rc.Cli.Commands;
 public static class FileCommand
 {
     private const int DefaultFileReadSize = 256 * 1024;
-    private const int LegacyTransferChunkSize = 4 * 1024 * 1024;
     private const int PreferredBinaryTransferChunkSize = 64 * 1024 * 1024;
 
     public static async Task<int> RunFsAsync(string[] args, TextWriter output, TextWriter error)
     {
-        if (!TryCommon(args, out var operation, out var endpoint, out var fingerprint, out var path, out var options, out var message)) return await FailAsync(error, message!);
+        if (!TryCommon(args, out var operation, out var endpoint, out var fingerprint, out var path, out var options, out var message)) return await FailAsync(error, message!, 2);
         try
         {
             await using var connection = await AuthenticatedControlConnection.ConnectAsync(endpoint!, fingerprint!);
@@ -38,10 +37,11 @@ public static class FileCommand
 
     public static async Task<int> RunCopyAsync(string[] args, TextWriter output, TextWriter error)
     {
-        if (!TryCommon(args, out var operation, out var endpoint, out var fingerprint, out var path, out var options, out var message)) return await FailAsync(error, message!);
+        if (!TryCommon(args, out var operation, out var endpoint, out var fingerprint, out var path, out var options, out var message)) return await FailAsync(error, message!, 2);
         try
         {
             await using var connection = await AuthenticatedControlConnection.ConnectAsync(endpoint!, fingerprint!);
+            EnsureCurrentAgentCapabilities(connection.SupportsBinaryTransfer, connection.SupportsStreamingIntegrity);
             if (operation == "status")
             {
                 var sessionId = options.GetValueOrDefault("session") ?? path;
@@ -50,9 +50,7 @@ public static class FileCommand
                 return 0;
             }
             var destination = options.GetValueOrDefault("to") ?? throw new ArgumentException("--to is required.");
-            var defaultChunkSize = connection.SupportsBinaryTransfer
-                ? Math.Min(PreferredBinaryTransferChunkSize, connection.MaximumBinaryTransferChunkBytes)
-                : LegacyTransferChunkSize;
+            var defaultChunkSize = Math.Min(PreferredBinaryTransferChunkSize, connection.MaximumBinaryTransferChunkBytes);
             var chunkSize = GetInt(options, "chunk-size", defaultChunkSize);
             var sessionIdOption = options.GetValueOrDefault("session");
             TransferSessionSnapshot session;
@@ -62,29 +60,28 @@ public static class FileCommand
             }
             else if (operation == "upload")
             {
-                var manifest = await BuildLocalManifestAsync(path!, includeHashes: !connection.SupportsStreamingIntegrity);
+                var manifest = await BuildLocalManifestAsync(path!, includeHashes: false);
                 session = (await connection.SendAsync<TransferStartResponse>(new ControlTransferStartRequest(1, connection.ControllerId,
                     new TransferStartRequest(TransferDirection.Upload, Path.GetFullPath(path!), destination, manifest, chunkSize,
-                        connection.SupportsStreamingIntegrity)))).Session;
+                        StreamingIntegrity: true)))).Session;
             }
             else if (operation == "download")
             {
                 session = (await connection.SendAsync<TransferStartResponse>(new ControlTransferStartRequest(1, connection.ControllerId,
                     new TransferStartRequest(TransferDirection.Download, path!, Path.GetFullPath(destination), new FileManifest(path!, []), chunkSize,
-                        connection.SupportsStreamingIntegrity)))).Session;
+                        StreamingIntegrity: true)))).Session;
             }
             else throw new ArgumentException(UsageCopy());
 
             await error.WriteLineAsync($"[rcctl] transferSession={session.SessionId}");
             await error.FlushAsync();
-            var stopwatch = Stopwatch.StartNew();
+            var speed = new TransferSpeedReporter(error);
             var transferredBytes = operation == "upload"
-                ? await UploadAsync(connection, session, path!)
-                : await DownloadAsync(connection, session, destination);
+                ? await UploadAsync(connection, session, path!, speed)
+                : await DownloadAsync(connection, session, destination, speed);
+            speed.Stop();
             var completed = await connection.SendAsync<TransferCompleteResponse>(new ControlTransferCompleteRequest(1, connection.ControllerId, new TransferCompleteRequest(session.SessionId)));
-            stopwatch.Stop();
-            var mebibytesPerSecond = transferredBytes / 1024d / 1024d / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001d);
-            await error.WriteLineAsync($"[rcctl] bytes={transferredBytes} elapsed={stopwatch.Elapsed.TotalSeconds:F3}s MiB/s={mebibytesPerSecond:F2}");
+            await speed.CompleteAsync(transferredBytes);
             await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(completed), ContractJson.Options));
             return 0;
         }
@@ -99,11 +96,14 @@ public static class FileCommand
         return await connection.SendAsync<FileWriteResponse>(new ControlFileWriteRequest(1, connection.ControllerId, new FileWriteRequest(path, data, options.ContainsKey("overwrite"))));
     }
 
-    private static async Task<long> UploadAsync(AuthenticatedControlConnection connection, TransferSessionSnapshot session, string localRoot)
+    private static async Task<long> UploadAsync(
+        AuthenticatedControlConnection connection,
+        TransferSessionSnapshot session,
+        string localRoot,
+        TransferSpeedReporter speed)
     {
         var root = Path.GetFullPath(localRoot);
         var transferredBytes = 0L;
-        var useBinary = connection.SupportsBinaryTransfer;
         foreach (var entry in session.Manifest.Entries.Where(IsFile))
         {
             var file = string.IsNullOrEmpty(entry.RelativePath) ? root : Path.Combine(root, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar));
@@ -113,56 +113,24 @@ public static class FileCommand
                 var length = checked((int)Math.Min(session.ChunkSize, entry.Length - offset));
                 if (session.CompletedChunks.Any(r => r.RelativePath == entry.RelativePath && r.Offset == offset && r.Length == length)) continue;
                 stream.Position = offset;
-                if (useBinary)
-                {
-                    try
-                    {
-                        if (connection.SupportsStreamingIntegrity)
-                        {
-                            await connection.SendBinaryUploadAsync(
-                                new TransferBinaryWriteRequest(session.SessionId, entry.RelativePath, offset, length, null), stream);
-                        }
-                        else
-                        {
-                            var data = new byte[length];
-                            await stream.ReadExactlyAsync(data);
-                            var hash = Convert.ToHexString(SHA256.HashData(data));
-                            await connection.SendBinaryUploadAsync(
-                                new TransferBinaryWriteRequest(session.SessionId, entry.RelativePath, offset, length, hash), data);
-                        }
-                    }
-                    catch (InvalidOperationException exception) when (IsBinaryTransferUnsupported(exception))
-                    {
-                        useBinary = false;
-                        stream.Position = offset;
-                        var data = new byte[length];
-                        await stream.ReadExactlyAsync(data);
-                        var hash = Convert.ToHexString(SHA256.HashData(data));
-                        var chunk = new FileChunk(session.SessionId, entry.RelativePath, offset, data, offset + length >= entry.Length);
-                        await connection.SendAsync<TransferWriteChunkResponse>(new ControlTransferWriteChunkRequest(1, connection.ControllerId,
-                            new TransferWriteChunkRequest(chunk, hash)));
-                    }
-                }
-                else
-                {
-                    var data = new byte[length];
-                    await stream.ReadExactlyAsync(data);
-                    var hash = Convert.ToHexString(SHA256.HashData(data));
-                    var chunk = new FileChunk(session.SessionId, entry.RelativePath, offset, data, offset + length >= entry.Length);
-                    await connection.SendAsync<TransferWriteChunkResponse>(new ControlTransferWriteChunkRequest(1, connection.ControllerId,
-                        new TransferWriteChunkRequest(chunk, hash)));
-                }
+                await connection.SendBinaryUploadAsync(
+                    new TransferBinaryWriteRequest(session.SessionId, entry.RelativePath, offset, length, null),
+                    stream,
+                    speed.RecordBytesAsync);
                 transferredBytes += length;
             }
         }
         return transferredBytes;
     }
 
-    private static async Task<long> DownloadAsync(AuthenticatedControlConnection connection, TransferSessionSnapshot session, string localDestination)
+    private static async Task<long> DownloadAsync(
+        AuthenticatedControlConnection connection,
+        TransferSessionSnapshot session,
+        string localDestination,
+        TransferSpeedReporter speed)
     {
         var root = Path.GetFullPath(localDestination);
         var transferredBytes = 0L;
-        var useBinary = connection.SupportsBinaryTransfer;
         var destinations = LocalTransferPaths.ResolveManifest(root, session.Manifest);
         foreach (var item in destinations.Where(item => !IsFile(item.Entry))) Directory.CreateDirectory(item.Path);
         foreach (var item in destinations.Where(item => IsFile(item.Entry)))
@@ -179,26 +147,12 @@ public static class FileCommand
                 while (offset < entry.Length)
                 {
                     var length = checked((int)Math.Min(session.ChunkSize, entry.Length - offset));
-                    if (useBinary)
-                    {
-                        try
-                        {
-                            var response = await connection.SendBinaryDownloadAsync(
-                                new TransferBinaryReadRequest(session.SessionId, entry.RelativePath, offset, length), stream);
-                            offset += response.Length;
-                            transferredBytes += response.Length;
-                            continue;
-                        }
-                        catch (InvalidOperationException exception) when (IsBinaryTransferUnsupported(exception))
-                        {
-                            useBinary = false;
-                        }
-                    }
-                    var jsonResponse = await connection.SendAsync<TransferReadChunkResponse>(new ControlTransferReadChunkRequest(1, connection.ControllerId,
-                        new TransferReadChunkRequest(session.SessionId, entry.RelativePath, offset, length)));
-                    var hash = Convert.ToHexString(SHA256.HashData(jsonResponse.Chunk.Data));
-                    if (!string.Equals(hash, jsonResponse.ChunkSha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Downloaded chunk hash mismatch.");
-                    await stream.WriteAsync(jsonResponse.Chunk.Data); offset += jsonResponse.Chunk.Data.Length; transferredBytes += jsonResponse.Chunk.Data.Length;
+                    var response = await connection.SendBinaryDownloadAsync(
+                        new TransferBinaryReadRequest(session.SessionId, entry.RelativePath, offset, length),
+                        stream,
+                        speed.RecordBytesAsync);
+                    offset += response.Length;
+                    transferredBytes += response.Length;
                 }
             }
             if (entry.Sha256 is not null && !string.Equals(await HashFileAsync(part), entry.Sha256, StringComparison.OrdinalIgnoreCase))
@@ -208,8 +162,13 @@ public static class FileCommand
         return transferredBytes;
     }
 
-    private static bool IsBinaryTransferUnsupported(InvalidOperationException exception) =>
-        exception.Message.Contains("not supported", StringComparison.OrdinalIgnoreCase);
+    internal static void EnsureCurrentAgentCapabilities(bool supportsBinaryTransfer, bool supportsStreamingIntegrity)
+    {
+        if (!supportsBinaryTransfer || !supportsStreamingIntegrity)
+        {
+            throw new InvalidOperationException("The target Agent is outdated. Upgrade it to a version that supports binary-transfer-v1 and streaming-integrity-v2.");
+        }
+    }
 
     internal static async Task<FileManifest> BuildLocalManifestAsync(string path, bool includeHashes = true)
     {
@@ -244,9 +203,105 @@ public static class FileCommand
     private static int GetInt(Dictionary<string,string?> o,string k,int d)=>o.TryGetValue(k,out var v)&&int.TryParse(v,NumberStyles.None,CultureInfo.InvariantCulture,out var n)?n:d;
     private static long GetLong(Dictionary<string,string?> o,string k,long d)=>o.TryGetValue(k,out var v)&&long.TryParse(v,NumberStyles.None,CultureInfo.InvariantCulture,out var n)?n:d;
     private static string? NormalizeFingerprint(string? value){if(value is null)return null;var n=value.Replace(":","").Trim();return n.Length==64&&n.All(Uri.IsHexDigit)?n.ToUpperInvariant():null;}
-    private static async Task<int> FailAsync(TextWriter error,string message){await error.WriteLineAsync(message);return 1;}
+    private static async Task<int> FailAsync(TextWriter error, string message, int exitCode = 1)
+    {
+        await error.WriteLineAsync(message);
+        return exitCode;
+    }
     private static string UsageFs()=>"Usage: rcctl fs list|stat|read|write <IP:port> <path> --fingerprint <SHA256> ...";
     private static string UsageCopy()=>"Usage: rcctl copy upload|download|status <IP:port> <path|session> --fingerprint <SHA256> ...";
+}
+
+internal sealed class TransferSpeedReporter
+{
+    private const double BytesPerMebibyte = 1024d * 1024d;
+    private readonly TextWriter output;
+    private readonly TimeSpan reportInterval;
+    private readonly Func<TimeSpan> elapsedProvider;
+    private readonly Stopwatch? stopwatch;
+    private readonly List<double> samples = [];
+    private TimeSpan lastSampleAt;
+    private long lastSampleBytes;
+
+    public TransferSpeedReporter(
+        TextWriter output,
+        TimeSpan? reportInterval = null,
+        Func<TimeSpan>? elapsedProvider = null)
+    {
+        this.output = output;
+        this.reportInterval = reportInterval ?? TimeSpan.FromSeconds(1);
+        if (elapsedProvider is null)
+        {
+            stopwatch = Stopwatch.StartNew();
+            this.elapsedProvider = () => stopwatch.Elapsed;
+        }
+        else
+        {
+            this.elapsedProvider = elapsedProvider;
+        }
+    }
+
+    public long TotalBytes { get; private set; }
+
+    public void Stop() => stopwatch?.Stop();
+
+    public async ValueTask RecordBytesAsync(int byteCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(byteCount);
+
+        TotalBytes += byteCount;
+        var elapsed = elapsedProvider();
+        if (elapsed - lastSampleAt < reportInterval)
+        {
+            return;
+        }
+
+        await WriteSampleAsync(elapsed).ConfigureAwait(false);
+    }
+
+    public async Task CompleteAsync(long? logicalBytes = null)
+    {
+        Stop();
+        var elapsed = elapsedProvider();
+        if (TotalBytes > lastSampleBytes)
+        {
+            await WriteSampleAsync(elapsed).ConfigureAwait(false);
+        }
+
+        var completedBytes = logicalBytes ?? TotalBytes;
+        if (completedBytes < 0 || completedBytes > TotalBytes)
+        {
+            throw new InvalidDataException("Logical transfer bytes cannot exceed bytes sent on the wire.");
+        }
+        var retransmittedBytes = TotalBytes - completedBytes;
+        var average = ToMebibytesPerSecond(TotalBytes, elapsed.TotalSeconds);
+        var minimum = samples.Count == 0 ? average : samples.Min();
+        var maximum = samples.Count == 0 ? average : samples.Max();
+        await output.WriteLineAsync(
+            $"[rcctl] bytes={completedBytes} wireBytes={TotalBytes} retransmittedBytes={retransmittedBytes} elapsed={elapsed.TotalSeconds:F3}s MiB/s={average:F2} minMiB/s={minimum:F2} maxMiB/s={maximum:F2} avgMiB/s={average:F2}").ConfigureAwait(false);
+        await output.FlushAsync().ConfigureAwait(false);
+    }
+
+    private async Task WriteSampleAsync(TimeSpan elapsed)
+    {
+        var deltaBytes = TotalBytes - lastSampleBytes;
+        var deltaSeconds = (elapsed - lastSampleAt).TotalSeconds;
+        if (deltaBytes <= 0)
+        {
+            return;
+        }
+
+        var speed = ToMebibytesPerSecond(deltaBytes, deltaSeconds);
+        samples.Add(speed);
+        lastSampleBytes = TotalBytes;
+        lastSampleAt = elapsed;
+        await output.WriteLineAsync(
+            $"[rcctl] progress bytes={TotalBytes} elapsed={elapsed.TotalSeconds:F3}s currentMiB/s={speed:F2}").ConfigureAwait(false);
+        await output.FlushAsync().ConfigureAwait(false);
+    }
+
+    private static double ToMebibytesPerSecond(long bytes, double seconds) =>
+        bytes / BytesPerMebibyte / Math.Max(seconds, 0.001d);
 }
 
 internal static class LocalTransferPaths

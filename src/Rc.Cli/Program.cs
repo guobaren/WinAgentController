@@ -41,6 +41,7 @@ if (!textMode)
 {
     if (exitCode == 0 || IsSuccessEnvelope(capturedOutput!.ToString()))
     {
+        await Console.Error.WriteAsync(capturedError!.ToString());
         await Console.Out.WriteAsync(capturedOutput!.ToString());
     }
     else

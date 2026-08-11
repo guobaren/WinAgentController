@@ -35,6 +35,11 @@ internal sealed class TargetArgumentResolver(ControllerTargetStore store)
             return TargetArgumentResolution.Unchanged(arguments);
         }
 
+        if (arguments.Length < endpointIndex)
+        {
+            return TargetArgumentResolution.Unchanged(arguments);
+        }
+
         if (arguments.Length > endpointIndex && IPEndPoint.TryParse(arguments[endpointIndex], out _))
         {
             return TargetArgumentResolution.Unchanged(arguments);

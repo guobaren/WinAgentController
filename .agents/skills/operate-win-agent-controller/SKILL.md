@@ -28,7 +28,7 @@ Operate WinAgentController from source checkout through target deployment and au
 6. Keep `RC_AGENT_FILE_ROOT` narrow and use paths relative to that root for remote file operations.
 7. Confirm before uninstalling, regenerating identity, clearing pairing, closing windows, cancelling jobs, or replacing remote files.
 8. Do not claim a test or deployment scenario passes without current evidence. Read `docs/CURRENT_PROGRESS.md` and record unresolved validation failures there when requested.
-9. For `copy` performance work, distinguish legacy JSON/Base64 chunks from negotiated binary streaming. Compare external process time on the same dataset, use fresh destinations, and require post-transfer SHA-256 equality; a successful exit code alone is insufficient.
+9. Current `copy` and update operations require the advertised binary streaming capabilities. Upgrade an outdated Agent instead of falling back to JSON/Base64. Compare external process time on the same dataset, use fresh destinations, and require post-transfer SHA-256 equality; a successful exit code alone is insufficient.
 
 ## Treat updates as a detached lifecycle
 
@@ -37,7 +37,7 @@ Operate WinAgentController from source checkout through target deployment and au
 3. The detached runner writes `update-started`, stops UI/Agent/Broker, runs the rollback-protected installer, and atomically writes `update-result.json` before removing its scheduled task.
 4. After the Agent restarts, treat the detached result as the update outcome. An `InterruptedByReboot` state on the bootstrap Broker job is not the final result once the detached runner has started.
 5. A `Succeeded` update still requires a pinned-fingerprint probe, a harmless authenticated command, service/UI registration checks, and relevant UI acceptance tests.
-6. An Agent installed before detached-update support needs one trusted local or recovery-channel refresh before it can perform the new standard update lifecycle.
+6. An Agent missing detached-update or binary-update support needs one trusted local or recovery-channel refresh before the current CLI can update it.
 
 ## Work from repository truth
 

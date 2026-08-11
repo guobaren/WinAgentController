@@ -76,6 +76,8 @@ public sealed class ControlRequestAuthenticationTests
         var chunk = new UpdateWriteChunkRequest(start.UpdateId, "Rc.Agent.exe", 0, [1, 2, 3], Convert.ToHexString(SHA256.HashData([1, 2, 3])));
         var startSignature = ControlRequestAuthentication.SignUpdateStart("agent-1", "controller-1", start, privateKey);
         var chunkSignature = ControlRequestAuthentication.SignUpdateWriteChunk("agent-1", "controller-1", chunk, privateKey);
+        var binary = new UpdateBinaryWriteRequest(start.UpdateId, "Rc.Agent.exe", 0, 3, chunk.Sha256);
+        var binarySignature = ControlRequestAuthentication.SignUpdateWriteBinary("agent-1", "controller-1", binary, privateKey);
 
         try
         {
@@ -83,11 +85,14 @@ public sealed class ControlRequestAuthenticationTests
             Assert.False(ControlRequestAuthentication.VerifyUpdateStart("agent-1", "controller-1", start with { UpdateId = Guid.NewGuid() }, startSignature, privateKey));
             Assert.True(ControlRequestAuthentication.VerifyUpdateWriteChunk("agent-1", "controller-1", chunk, chunkSignature, privateKey));
             Assert.False(ControlRequestAuthentication.VerifyUpdateWriteChunk("agent-1", "controller-1", new UpdateWriteChunkRequest(start.UpdateId, "Rc.Agent.exe", 0, [1, 2, 3], new string('B', 64)), chunkSignature, privateKey));
+            Assert.True(ControlRequestAuthentication.VerifyUpdateWriteBinary("agent-1", "controller-1", binary, binarySignature, privateKey));
+            Assert.False(ControlRequestAuthentication.VerifyUpdateWriteBinary("agent-1", "controller-1", binary with { Length = 4 }, binarySignature, privateKey));
         }
         finally
         {
             CryptographicOperations.ZeroMemory(startSignature);
             CryptographicOperations.ZeroMemory(chunkSignature);
+            CryptographicOperations.ZeroMemory(binarySignature);
         }
     }
 }

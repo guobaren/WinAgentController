@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using Rc.Agent.Security;
 using Rc.Cli.Security;
+using Rc.Cli.Targets;
 using Rc.Contracts;
 
 namespace Rc.Cli.Commands;
@@ -91,6 +92,18 @@ public static class PairCommand
                                 controllerRound3,
                                 proof.ConfirmationMac,
                                 proof.CertificateSignature));
+                        try
+                        {
+                            await new ControllerTargetStore().RememberSuccessfulConnectionAsync(
+                                start.Binding.AgentDeviceId,
+                                endpoint!,
+                                fingerprint!).ConfigureAwait(false);
+                        }
+                        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
+                        {
+                            await error.WriteLineAsync($"Pairing succeeded but the target profile could not be saved: {exception.Message}");
+                            return 1;
+                        }
                         if (text)
                         {
                             await output.WriteLineAsync($"paired deviceId: {start.Binding.AgentDeviceId}");

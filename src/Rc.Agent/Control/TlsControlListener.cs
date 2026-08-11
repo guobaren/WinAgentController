@@ -255,6 +255,9 @@ public sealed class TlsControlListener : IAsyncDisposable
                         case ControlMessageKinds.UpdateWriteChunk:
                             await HandleUpdateWriteChunkAsync(document.RootElement, writer, authenticatedSession, cancellationToken);
                             break;
+                        case ControlMessageKinds.UpdateWriteBinary:
+                            await HandleUpdateWriteBinaryAsync(document.RootElement, tls, writer, authenticatedSession, cancellationToken);
+                            break;
                         case ControlMessageKinds.UpdateComplete:
                             await HandleUpdateCompleteAsync(document.RootElement, writer, authenticatedSession, cancellationToken);
                             break;
@@ -371,6 +374,48 @@ public sealed class TlsControlListener : IAsyncDisposable
             () => updateService.WriteChunkAsync(request.Request, cancellationToken), session, writer, cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task HandleUpdateWriteBinaryAsync(JsonElement root, Stream stream, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlUpdateWriteBinaryRequest>(ContractJson.Options);
+        if (request is null || request.ProtocolVersion != 1 || request.Request is null)
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The binary update chunk request is invalid.");
+            return;
+        }
+        if (!await VerifyPairedControllerRequestAsync(
+                session,
+                request.ControllerId,
+                request.Signature,
+                key => ControlRequestAuthentication.VerifyUpdateWriteBinary(identity.DeviceId, request.ControllerId, request.Request, request.Signature, key),
+                writer,
+                cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        try
+        {
+            var result = await updateService.WriteBinaryChunkAsync(
+                request.Request,
+                stream,
+                ready => WriteSuccessAsync(writer, ready),
+                cancellationToken).ConfigureAwait(false);
+            await AuditAsync("update.binary_chunk_written", request.ControllerId, request.Request.UpdateId.ToString("N"), true, null,
+                new Dictionary<string, string> { ["length"] = request.Request.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) }, cancellationToken).ConfigureAwait(false);
+            await WriteSuccessAsync(writer, result).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException exception)
+        {
+            await AuditAsync("update.binary_chunk_written", request.ControllerId, request.Request.UpdateId.ToString("N"), false, ErrorCode.FailedPrecondition, null, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, ErrorCode.FailedPrecondition, exception.Message).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidDataException or IOException)
+        {
+            await AuditAsync("update.binary_chunk_written", request.ControllerId, request.Request.UpdateId.ToString("N"), false, ErrorCode.InvalidRequest, null, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, exception.Message).ConfigureAwait(false);
+        }
+    }
+
     private async Task HandleUpdateCompleteAsync(JsonElement root, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
     {
         var request = root.Deserialize<ControlUpdateCompleteRequest>(ContractJson.Options);
@@ -482,8 +527,9 @@ public sealed class TlsControlListener : IAsyncDisposable
             identity.CertificateSha256Fingerprint,
             pairedController is not null)
         {
-            Capabilities = [ControlCapabilities.BinaryTransferV1, ControlCapabilities.StreamingIntegrityV2],
+            Capabilities = [ControlCapabilities.BinaryTransferV1, ControlCapabilities.StreamingIntegrityV2, ControlCapabilities.BinaryUpdateV1],
             MaximumBinaryTransferChunkBytes = options.MaximumTransferChunkBytes,
+            MaximumBinaryUpdateChunkBytes = options.MaximumBinaryUpdateChunkBytes,
         });
     }
 

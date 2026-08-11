@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Authentication;
 using System.Text.Json;
 using Rc.Cli.Security;
+using Rc.Cli.Targets;
 using Rc.Contracts;
 
 namespace Rc.Cli.Commands;
@@ -34,6 +35,18 @@ public static class ProbeCommand
         try
         {
             var response = await AgentProbeClient.ProbeAsync(endpoint, expectedFingerprint).ConfigureAwait(false);
+            try
+            {
+                await new ControllerTargetStore().RememberSuccessfulConnectionAsync(
+                    response.DeviceId,
+                    endpoint,
+                    expectedFingerprint).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
+            {
+                await error.WriteLineAsync($"Connected to the agent but could not save its target profile: {exception.Message}");
+                return 1;
+            }
 
             if (text)
             {

@@ -8,6 +8,8 @@ param(
     [Parameter(Mandatory = $true)][string]$ReadyPath,
     [Parameter(Mandatory = $true)][string]$StartedPath,
     [Parameter(Mandatory = $true)][string]$ResultPath,
+    [string]$StandardOutputPath,
+    [string]$StandardErrorPath,
     [Parameter(Mandatory = $true)][string]$TaskName,
     [ValidateRange(1, 300)][int]$ReadyTimeoutSeconds = 60
 )
@@ -15,10 +17,20 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$resultDirectory = Split-Path -Parent $ResultPath
+if ([string]::IsNullOrWhiteSpace($StandardOutputPath)) {
+    $StandardOutputPath = Join-Path $resultDirectory 'update-stdout.log'
+}
+if ([string]::IsNullOrWhiteSpace($StandardErrorPath)) {
+    $StandardErrorPath = Join-Path $resultDirectory 'update-stderr.log'
+}
+
 $result = [ordered]@{
     succeeded = $false
     exitCode = 1
     failureMessage = $null
+    standardOutputPath = $StandardOutputPath
+    standardErrorPath = $StandardErrorPath
 }
 
 try {
@@ -34,11 +46,27 @@ try {
     # Give the Agent time to send the Complete response before its service is stopped.
     Start-Sleep -Seconds 2
 
-    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-        -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UpdateScript `
-        -SourcePath $SourcePath -InstallPath $InstallPath -DataRoot $DataRoot -TcpPort $TcpPort
-    if ($LASTEXITCODE -ne 0) {
-        throw "Update-RemoteController.ps1 exited with code $LASTEXITCODE."
+    $logDirectory = Split-Path -Parent $StandardOutputPath
+    if (-not [string]::IsNullOrWhiteSpace($logDirectory)) {
+        New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+    }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell promotes native stderr to an ErrorRecord. Persist it,
+        # but use the child process exit code as the update success boundary.
+        $ErrorActionPreference = 'Continue'
+        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UpdateScript `
+            -SourcePath $SourcePath -InstallPath $InstallPath -DataRoot $DataRoot -TcpPort $TcpPort `
+            1> $StandardOutputPath 2> $StandardErrorPath
+        $updateExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($updateExitCode -ne 0) {
+        $result.exitCode = $updateExitCode
+        throw "Update-RemoteController.ps1 exited with code $updateExitCode."
     }
 
     $result.succeeded = $true
@@ -48,7 +76,6 @@ catch {
     $result.failureMessage = $_.Exception.Message
 }
 finally {
-    $resultDirectory = Split-Path -Parent $ResultPath
     if (-not [string]::IsNullOrWhiteSpace($resultDirectory)) {
         New-Item -ItemType Directory -Path $resultDirectory -Force | Out-Null
     }

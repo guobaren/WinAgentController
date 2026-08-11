@@ -238,11 +238,9 @@ Setup-RemoteControllerAgent.cmd
   --update <updateId> --text
 ```
 
-控制端会从包内 `Rc.Agent.exe` 读取版本（无法读取时必须显式传入 `--version`），构建 SHA-256 清单后以默认 256 KiB 分块上传；可用 `--chunk-size 1-262144` 调整。被控端只接受已配对控制端的签名请求，拒绝路径越界、篡改块、缺失必需文件、超过 1 GiB 的包及版本降级。更新会话和任务 ID 存放在受保护的数据根中，便于重连后查询。
+控制端会从包内 `Rc.Agent.exe` 读取版本（无法读取时必须显式传入 `--version`），构建并签名 SHA-256 清单。当前 Agent 必须公布 `binary-update-v1`；CLI 默认以 64 MiB 原始 TLS 帧直接写入受保护 DataRoot 下的更新 staging，并由两端流式计算、核对逐块 SHA-256。缺少该能力时命令会明确要求先升级 Agent，不再回退 JSON/Base64。`--chunk-size <bytes>` 可在对端公布的上限内调整。单块传输中若连接中断，CLI 会重新建立固定指纹 TLS 会话并重发该块；上传期间 stderr 约每秒显示 `currentMiB/s`，完成统计中的 `bytes`、`wireBytes` 和 `retransmittedBytes` 分别表示逻辑字节、线上实际字节和重发字节，同时显示 `minMiB/s`、`maxMiB/s` 和 `avgMiB/s`。被控端只接受已配对控制端的签名请求，拒绝路径越界、篡改块、缺失必需文件、超过 1 GiB 的包及版本降级。更新会话和任务 ID 存放在受保护的数据根中，便于重连后查询。
 
-Agent 先持久化 `Applying` 状态，再启动独立的 SYSTEM 计划任务。`Invoke-RemoteControllerDetachedUpdate.ps1` 在 Agent/Broker 停止期间继续执行安装，并以原子结果文件供 Agent 重启后判定最终状态。更新脚本会停止 UI Agent、Agent 和 Broker，将旧安装目录移至同一卷的临时备份，再运行安装脚本；安装失败时会删除不完整的新目录、恢复旧目录并尝试启动旧服务。`Succeeded` 表示独立安装脚本退出码为 0，但仍不替代更新后的 probe、认证命令和 UI 健康验收。`C:\ProgramData\RemoteController` 中的证书、配对、任务和审计数据不会被删除。真实双节点更新、断线续传和失败回滚状态以 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md) 为准。
-
-修复前版本的 Agent 尚不能创建独立更新任务，必须先通过目标本机安装或已授权的独立恢复通道刷新一次。完成这次引导后，后续即可使用上述标准 `update apply --wait` 流程。无论在控制机还是被控机刷新安装，都应保持 `RegenerateIdentity=false`，并在完成后重新核对固定指纹、配对状态、认证命令和 UI Agent。
+Agent 先持久化 `Applying` 状态，再启动独立的 SYSTEM 计划任务。`Invoke-RemoteControllerDetachedUpdate.ps1` 在 Agent/Broker 停止期间继续执行安装，将子更新脚本 stdout/stderr 分别保存为会话目录下的 `update-stdout.log` 和 `update-stderr.log`，并以原子结果文件供 Agent 重启后判定最终状态。若默认 3600 秒内没有 durable result，状态会收敛为 `Failed` 并指向两份日志；可通过 `RC_UPDATE_DETACHED_RESULT_TIMEOUT_SECONDS` 调整。更新脚本会停止 UI Agent、Agent 和 Broker，将旧安装目录移至同一卷的临时备份，再运行安装脚本；安装失败时会删除不完整的新目录、恢复旧目录并尝试启动旧服务。`Succeeded` 表示独立安装脚本退出码为 0，但仍不替代更新后的 probe、认证命令和 UI 健康验收。`C:\ProgramData\RemoteController` 中的证书、配对、任务和审计数据不会被删除。无论在控制机还是被控机刷新安装，都应保持 `RegenerateIdentity=false`，并在完成后重新核对固定指纹、配对状态、认证命令和 UI Agent。真实双节点更新、断线续传和失败回滚状态以 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md) 为准。
 
 ## 首次连接与日常使用
 
@@ -261,9 +259,11 @@ $rcctl = 'C:\Tools\WinAgentController\Rc.Cli.exe'
 
 从可信的被控机控制台、受控资产登记或其他带外渠道核对指纹。不要仅依据 UDP 发现结果或他人发送的地址/指纹执行配对。
 
+固定指纹验证成功后，`probe`、`pair` 以及后续认证控制连接都会自动把被控端写入控制端目标档案。首次自动登记使用 `agent-<设备ID前16位>` 作为名称，并在没有当前目标时将其设为当前目标；同一设备 ID 与同一固定指纹再次连接时只刷新最近端点，不会重复新增。若设备证书变化，必须先通过可信渠道核对新指纹；只有显式固定新指纹的连接成功后，才会用新档案替换该设备的旧指纹档案。
+
 ### 控制端目标档案
 
-核对设备指纹后，可将设备保存为命名目标。`target add` 会先使用固定指纹建立 TLS 连接并读取设备 ID，验证成功后才写入档案：
+核对设备指纹后，也可以使用 `target add` 保存更易读的命名别名。`target add` 会先使用固定指纹建立 TLS 连接并读取设备 ID，验证成功后才写入档案：
 
 ```powershell
 & $rcctl target add lab 192.168.1.50:43001 --fingerprint <64位SHA256指纹> --text
@@ -285,7 +285,7 @@ IP 变化后，可通过局域网发现刷新最近端点。刷新只接受设�
 & $rcctl target refresh lab --timeout-ms 4000 --text
 ```
 
-档案默认保存在 `%LOCALAPPDATA%\RemoteController\targets.json`；设置 `RC_CONTROLLER_DATA_ROOT` 可更改目录。档案不包含配对码或控制端私钥。显式使用 `IP:port --fingerprint` 的原有命令保持兼容。
+档案默认保存在 `%LOCALAPPDATA%\RemoteController\targets.json`；设置 `RC_CONTROLLER_DATA_ROOT` 可更改目录。档案不包含配对码或控制端私钥。成功连接已经通过显式固定指纹验证，因此同设备 ID 若出现新指纹，控制端会用新端点/指纹替换并清除该设备的旧指纹档案；UDP 发现本身仍无权替换指纹。显式使用 `IP:port --fingerprint` 的命令保持可用。
 
 ### 配对
 
@@ -341,7 +341,7 @@ Agent 端文件服务限制在 `RC_AGENT_FILE_ROOT`（默认由运行账户的�
 & $rcctl copy download 192.168.1.50:43001 'incoming\build-output' --fingerprint <SHA256> --to .\restored
 ```
 
-新版 Agent 会协商二进制 TLS 流和 64 MiB 分块；旧 Agent 自动回退到兼容的 4 MiB JSON 分块。二进制链路在读写数据的同时由两端计算并核对逐块 SHA-256，不再为清单、块发送和完成确认重复扫描整份文件。活动会话常驻内存并每 256 MiB 持久化一次断点；异常中断最多重传最近一个检查点之后的数据。传输开始时 CLI 会在标准错误写出 `transferSession=<id>`，完成时写出本次实际传输的 `bytes`、`elapsed` 和 `MiB/s`；stdout 仍保持 JSON envelope，便于脚本处理。中断后可用会话 ID 查询或续传：
+当前 Agent 必须公布 `binary-transfer-v1` 和 `streaming-integrity-v2`，CLI 默认使用二进制 TLS 流和 64 MiB 分块；缺少能力时直接要求升级 Agent，不再回退 JSON。二进制链路在读写数据的同时由两端计算并核对逐块 SHA-256，不再为清单、块发送和完成确认重复扫描整份文件。单块传输中若连接中断，CLI 会重新建立固定指纹 TLS 会话并从块起点重发；服务重启后则从每 256 MiB 持久化断点继续。传输开始时 CLI 会在标准错误写出 `transferSession=<id>`，传输中约每秒写出 `currentMiB/s`，完成时写出逻辑 `bytes`、线上 `wireBytes`、`retransmittedBytes`、`elapsed`、`minMiB/s`、`maxMiB/s` 和 `avgMiB/s`；stdout 仍保持 JSON envelope，便于脚本处理。中断后也可用会话 ID 查询或续传：
 
 ```powershell
 & $rcctl copy status 192.168.1.50:43001 <transferSessionId> --fingerprint <SHA256>
@@ -405,8 +405,8 @@ UI 命令使用与其他控制请求相同的 TLS 指纹固定和已配对会话
 | `rcctl target use <名称> [--text]` | 设置后续命令省略端点时使用的当前目标。 |
 | `rcctl target refresh [名称] [--timeout-ms 1-60000] [--text]` | 按设备 ID 和既有指纹匹配发现结果并更新 IP 与端口。 |
 | `rcctl discover [--timeout-ms 1-60000] [--text]` | 监听 UDP 发现公告。 |
-| `rcctl probe <IP:port> --fingerprint <SHA256> [--text]` | 读取 Agent 的公开设备与配对状态，同时验证 TLS 指纹。 |
-| `rcctl pair <IP:port> --fingerprint <SHA256> [--name <名称>] [--code <一次性配对码>] [--text]` | 发起首次配对；省略 `--code` 时从标准输入读取一次性代码。 |
+| `rcctl probe <IP:port> --fingerprint <SHA256> [--text]` | 读取 Agent 的公开设备与配对状态，验证 TLS 指纹，并自动登记/刷新目标档案。 |
+| `rcctl pair <IP:port> --fingerprint <SHA256> [--name <名称>] [--code <一次性配对码>] [--text]` | 发起首次配对；省略 `--code` 时从标准输入读取一次性代码；成功后自动登记目标档案。 |
 | `rcctl exec <IP:port> --fingerprint <SHA256> --command <命令> [--shell powershell\|cmd] [--workdir <路径>] [--elevated] [--text]` | 执行单次命令。 |
 | `rcctl job start <IP:port> ... --command <命令> [--shell ...] [--workdir ...] [--elevated] [--pty] [--cols 1-1000] [--rows 1-1000] [--text]` | 启动持久化任务。 |
 | `rcctl job status <IP:port> --fingerprint <SHA256> --job <jobId> [--text]` | 查询单个任务状态。 |
@@ -420,7 +420,7 @@ UI 命令使用与其他控制请求相同的 TLS 指纹固定和已配对会话
 | `rcctl fs list\|stat\|read\|write <IP:port> <路径> --fingerprint <SHA256> ...` | 文件根目录内的列举、属性、读取和写入；`read` 支持 `--offset`/`--max-bytes`，`write` 使用 `--data` 或 `--source`，可加 `--overwrite`。 |
 | `rcctl copy upload\|download <IP:port> <路径> --fingerprint <SHA256> --to <路径> [--chunk-size <字节>] [--session <id>]` | 上传或下载文件/目录，`--session` 用于继续既有会话。 |
 | `rcctl copy status <IP:port> <会话ID> --fingerprint <SHA256>` | 查询传输会话。也可使用 `--session <会话ID>`。 |
-| `rcctl update apply <IP:port> --fingerprint <SHA256> --package <目录> [--version <版本>] [--chunk-size 1-262144] [--wait] [--timeout-seconds 1-3600] [--text]` | 上传完整发布包并启动带回滚的更新。 |
+| `rcctl update apply <IP:port> --fingerprint <SHA256> --package <目录> [--version <版本>] [--chunk-size <bytes>] [--wait] [--timeout-seconds 1-3600] [--text]` | 使用必需的 `binary-update-v1` 上传完整发布包，显示纯上传速度并启动带回滚的更新。 |
 | `rcctl update status <IP:port> --fingerprint <SHA256> --update <GUID> [--text]` | 查询已提交更新的接收、应用或最终状态。 |
 | `rcctl ui status\|snapshot\|displays\|windows <IP:port> --fingerprint <SHA256> [--text]` | 查询活动 UI 会话、显示器、窗口和快照。 |
 | `rcctl ui screenshot <IP:port> --fingerprint <SHA256> <display\|window> <目标>` | 获取指定显示器或窗口的 PNG 截图。 |
@@ -448,9 +448,10 @@ CLI 无参数或未知命令会输出总览用法；成功的非 `--text` 命令
 | `RC_TASK_OUTPUT_LIMIT_BYTES` | `200 MiB` | 任务输出配额。 |
 | `RC_AUDIT_QUOTA_BYTES` | `16 MiB` | 审计记录配额。 |
 | `RC_TRANSFER_QUOTA_BYTES` | `2 GiB` | 单次传输清单的文件总字节配额。 |
-| `RC_TRANSFER_MAX_CHUNK_BYTES` | `64 MiB` | 新二进制 `copy` 的最大/默认分块；旧 Agent 兼容路径默认 4 MiB。 |
+| `RC_TRANSFER_MAX_CHUNK_BYTES` | `64 MiB` | 二进制 `copy` 的最大/默认分块。 |
 | `RC_UPDATE_MAX_PACKAGE_BYTES` | `1 GiB` | 一次一键更新允许接收的最大包大小。 |
-| `RC_UPDATE_MAX_CHUNK_BYTES` | `256 KiB` | 一键更新分块的最大值；控制端 `--chunk-size` 不得超过它。 |
+| `RC_UPDATE_MAX_CHUNK_BYTES` | `256 KiB` | 旧式 JSON 更新请求的服务端限制；当前 CLI 不使用该路径。 |
+| `RC_UPDATE_MAX_BINARY_CHUNK_BYTES` | `64 MiB` | `binary-update-v1` 更新流分块上限；控制端默认使用公布上限与 64 MiB 的较小值。 |
 | `RC_FILE_MAX_WRITE_BYTES` | `16 MiB` | `fs write` 单次原子写入最大值。 |
 | `RC_CONTROLLER_DATA_ROOT` | `%LOCALAPPDATA%\RemoteController` | 控制端 DPAPI 保护的身份文件目录。 |
 | `RC_UI_AGENT_CLIENT_SID` | 安装脚本根据 `-UiUser` 设置 | Agent 注册管道允许连接的 UI 用户 SID。 |

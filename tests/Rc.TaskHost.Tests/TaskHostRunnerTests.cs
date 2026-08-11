@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using Rc.Contracts;
 using Rc.TaskHost;
@@ -196,22 +197,32 @@ public sealed class TaskHostRunnerTests
     [Fact]
     public async Task PseudoConsoleCancellationForceKillsAfterGraceWhenInterruptIsIgnored()
     {
+        const string readyMarker = "ctrl-c-ignored-ready";
         await using var fixture = new TaskHostFixture(cancellationGracePeriod: TimeSpan.FromMilliseconds(200));
         await using var runner = fixture.CreateRunner(ExecRequest.ForDirectArgv(
-            ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", "[Console]::TreatControlCAsInput=$true; Start-Sleep -Seconds 30"],
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", $"[Console]::TreatControlCAsInput=$true; [Console]::Out.WriteLine('{readyMarker}'); [Console]::Out.Flush(); Start-Sleep -Seconds 30"],
             terminal: new TerminalOptions()));
         var completion = runner.RunAsync();
         await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(JobState.Running, runner.GetStatus().Job.State);
-        var startedAt = DateTimeOffset.UtcNow;
+
+        var terminalOutput = string.Empty;
+        for (var attempt = 0; attempt < 100 && !terminalOutput.Contains(readyMarker, StringComparison.Ordinal); attempt++)
+        {
+            await Task.Delay(20);
+            terminalOutput = await fixture.ReadOutputAsync("stdout");
+        }
+        Assert.Contains(readyMarker, terminalOutput, StringComparison.Ordinal);
+
+        var stopwatch = Stopwatch.StartNew();
 
         await fixture.SendAsync(new TaskControlMessage(TaskControlKind.Cancel));
         var status = await completion;
-        var elapsed = DateTimeOffset.UtcNow - startedAt;
+        stopwatch.Stop();
 
         Assert.Equal(JobState.Cancelled, status.Job.State);
-        Assert.True(elapsed >= TimeSpan.FromMilliseconds(150), $"Cancellation returned before the configured grace period: {elapsed}.");
-        Assert.True(elapsed < TimeSpan.FromSeconds(5), $"Force-kill fallback took too long: {elapsed}.");
+        Assert.True(stopwatch.Elapsed >= TimeSpan.FromMilliseconds(150), $"Cancellation returned before the configured grace period: {stopwatch.Elapsed}.");
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5), $"Force-kill fallback took too long: {stopwatch.Elapsed}.");
     }
     [Fact]
     public async Task OutputBeyondConfiguredLimitIsDrainedAndMarkedTruncated()

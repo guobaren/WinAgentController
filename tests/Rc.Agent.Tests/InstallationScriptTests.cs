@@ -57,17 +57,22 @@ public sealed class InstallationScriptTests
         await File.WriteAllTextAsync(updateScript, """
             param([string]$SourcePath, [string]$InstallPath, [string]$DataRoot, [int]$TcpPort)
             Set-Content -LiteralPath (Join-Path $SourcePath 'update-invoked') -Value "$InstallPath|$DataRoot|$TcpPort" -Encoding UTF8
+            Write-Output 'detached stdout evidence'
+            [Console]::Error.WriteLine('detached stderr evidence')
             exit 0
             """);
         var readyPath = Path.Combine(directory.Path, "update-ready");
         var startedPath = Path.Combine(directory.Path, "update-started");
         var resultPath = Path.Combine(directory.Path, "update-result.json");
+        var stdoutPath = Path.Combine(directory.Path, "update-stdout.log");
+        var stderrPath = Path.Combine(directory.Path, "update-stderr.log");
         await File.WriteAllTextAsync(readyPath, "ready");
 
         await RunPowerShellAsync(Path.Combine(FindRepositoryRoot(), "scripts", "Invoke-RemoteControllerDetachedUpdate.ps1"),
             "-UpdateScript", updateScript, "-SourcePath", source, "-InstallPath", Path.Combine(directory.Path, "install"),
             "-DataRoot", Path.Combine(directory.Path, "data"), "-TcpPort", "43001", "-ReadyPath", readyPath,
-            "-StartedPath", startedPath, "-ResultPath", resultPath, "-TaskName", "RcDetachedUpdateTest-" + Guid.NewGuid().ToString("N"));
+            "-StartedPath", startedPath, "-ResultPath", resultPath,
+            "-TaskName", "RcDetachedUpdateTest-" + Guid.NewGuid().ToString("N"));
 
         Assert.True(File.Exists(startedPath));
         Assert.True(File.Exists(Path.Combine(source, "update-invoked")));
@@ -75,6 +80,12 @@ public sealed class InstallationScriptTests
         Assert.True(result.RootElement.GetProperty("succeeded").GetBoolean());
         Assert.Equal(0, result.RootElement.GetProperty("exitCode").GetInt32());
         Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty("failureMessage").ValueKind);
+        Assert.Equal(stdoutPath, result.RootElement.GetProperty("standardOutputPath").GetString());
+        Assert.Equal(stderrPath, result.RootElement.GetProperty("standardErrorPath").GetString());
+        Assert.True(File.Exists(stdoutPath));
+        Assert.True(File.Exists(stderrPath));
+        Assert.Contains("detached stdout evidence", await File.ReadAllTextAsync(stdoutPath), StringComparison.Ordinal);
+        Assert.Contains("detached stderr evidence", await File.ReadAllTextAsync(stderrPath), StringComparison.Ordinal);
     }
 
     private static string FindRepositoryRoot()

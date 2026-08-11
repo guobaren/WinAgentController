@@ -10,6 +10,7 @@ using Rc.Agent.Persistence;
 using Rc.Agent.Security;
 using Rc.Cli.Commands;
 using Rc.Cli.Security;
+using Rc.Cli.Targets;
 using Rc.Contracts;
 using Rc.Agent.Tests.Persistence;
 using Xunit;
@@ -34,6 +35,7 @@ public sealed class CliCommandLiveTests : IAsyncLifetime, IDisposable
     private CancellationTokenSource cancellation = null!;
     private Task listenerTask = null!;
     private string? previousControllerRoot;
+    private string fileRoot = null!;
 
     private string Endpoint { get; set; } = string.Empty;
     private string Fingerprint => agentIdentity.CertificateSha256Fingerprint;
@@ -55,7 +57,7 @@ public sealed class CliCommandLiveTests : IAsyncLifetime, IDisposable
             controllerIdentity.Certificate,
             DateTimeOffset.UtcNow));
 
-        var fileRoot = Path.Combine(agentDirectory.Path, "files");
+        fileRoot = Path.Combine(agentDirectory.Path, "files");
         Directory.CreateDirectory(fileRoot);
         await File.WriteAllTextAsync(Path.Combine(fileRoot, "fixture.txt"), "cli fixture");
 
@@ -103,6 +105,20 @@ public sealed class CliCommandLiveTests : IAsyncLifetime, IDisposable
         Assert.Equal(Fingerprint, hello.CertificateSha256Fingerprint);
         Assert.True(hello.HasPairedController);
 
+        var automaticallyRemembered = await new ControllerTargetStore(controllerDirectory.Path).GetSnapshotAsync();
+        var automaticTarget = Assert.Single(automaticallyRemembered.Targets);
+        Assert.Equal(agentIdentity.DeviceId, automaticTarget.DeviceId);
+        Assert.Equal(Endpoint, automaticTarget.Endpoint);
+        Assert.Equal(Fingerprint, automaticTarget.CertificateSha256Fingerprint);
+
+        var resolvedJobList = await new TargetArgumentResolver(
+            new ControllerTargetStore(controllerDirectory.Path)).ResolveAsync(["job", "list"]);
+        Assert.True(resolvedJobList.Success, resolvedJobList.Error);
+        var automaticJobs = await InvokeAsync((output, error) => JobCommand.RunAsync(
+            resolvedJobList.Arguments[1..], output, error));
+        Assert.Equal(0, automaticJobs.ExitCode);
+        Assert.Empty(Deserialize<ControlJobListResponse>(automaticJobs.Output).Jobs);
+
         var add = await InvokeAsync((output, error) => TargetCommand.RunAsync(
             ["fixture", "add", Endpoint, "--fingerprint", Fingerprint], output, error));
         Assert.Equal(2, add.ExitCode);
@@ -128,6 +144,11 @@ public sealed class CliCommandLiveTests : IAsyncLifetime, IDisposable
         var jobList = Deserialize<ControlJobListResponse>(jobs.Output);
         Assert.Empty(jobList.Jobs);
 
+        var rememberedAfterAuthenticatedConnection = await new ControllerTargetStore(controllerDirectory.Path).GetSnapshotAsync();
+        Assert.Equal(2, rememberedAfterAuthenticatedConnection.Targets.Count);
+        Assert.Contains(rememberedAfterAuthenticatedConnection.Targets, target =>
+            target.DeviceId == agentIdentity.DeviceId && target.Endpoint == Endpoint && target.CertificateSha256Fingerprint == Fingerprint);
+
         var files = await InvokeAsync((output, error) => FileCommand.RunFsAsync(
             ["list", Endpoint, ".", "--fingerprint", Fingerprint], output, error));
         Assert.Equal(0, files.ExitCode);
@@ -143,6 +164,10 @@ public sealed class CliCommandLiveTests : IAsyncLifetime, IDisposable
         Assert.Equal(TransferSessionState.Completed, completedCopy.Session.State);
         Assert.Contains("bytes=12", copy.Error, StringComparison.Ordinal);
         Assert.Contains("MiB/s=", copy.Error, StringComparison.Ordinal);
+        Assert.Contains("currentMiB/s=", copy.Error, StringComparison.Ordinal);
+        Assert.Contains("minMiB/s=", copy.Error, StringComparison.Ordinal);
+        Assert.Contains("maxMiB/s=", copy.Error, StringComparison.Ordinal);
+        Assert.Contains("avgMiB/s=", copy.Error, StringComparison.Ordinal);
         var uploadAudit = await agentStore.ListAuditEventsAsync();
         Assert.DoesNotContain(uploadAudit, item => item.EventType == "file.transfer_write_binary" && item.Succeeded);
         Assert.Contains(uploadAudit, item => item.EventType == "file.transfer_complete" && item.Succeeded);
@@ -152,6 +177,10 @@ public sealed class CliCommandLiveTests : IAsyncLifetime, IDisposable
             ["download", Endpoint, "uploaded.txt", "--fingerprint", Fingerprint, "--to", downloadPath, "--chunk-size", "4"], output, error));
         Assert.Equal(0, download.ExitCode);
         Assert.Equal("copy fixture", await File.ReadAllTextAsync(downloadPath));
+        Assert.Contains("currentMiB/s=", download.Error, StringComparison.Ordinal);
+        Assert.Contains("minMiB/s=", download.Error, StringComparison.Ordinal);
+        Assert.Contains("maxMiB/s=", download.Error, StringComparison.Ordinal);
+        Assert.Contains("avgMiB/s=", download.Error, StringComparison.Ordinal);
         var downloadAudit = await agentStore.ListAuditEventsAsync();
         Assert.DoesNotContain(downloadAudit, item => item.EventType == "file.transfer_read_binary" && item.Succeeded);
         Assert.Contains(downloadAudit, item => item.EventType == "file.transfer_complete" && item.Succeeded);
@@ -189,6 +218,113 @@ public sealed class CliCommandLiveTests : IAsyncLifetime, IDisposable
         Assert.Equal(0, pair.ExitCode);
         Assert.Contains("pairedAtUtc", pair.Output, StringComparison.Ordinal);
         Assert.Empty(pair.Error);
+
+        var remembered = await new ControllerTargetStore(controllerDirectory.Path).GetSnapshotAsync();
+        var target = Assert.Single(remembered.Targets);
+        Assert.Equal(agentIdentity.DeviceId, target.DeviceId);
+        Assert.Equal(Endpoint, target.Endpoint);
+        Assert.Equal(Fingerprint, target.CertificateSha256Fingerprint);
+    }
+
+    [Fact]
+    public async Task BinaryCopyUploadReconnectsAfterControlledMidChunkDisconnect()
+    {
+        var data = RandomNumberGenerator.GetBytes((2 * 1024 * 1024) + 17);
+        var manifest = new FileManifest("local", [
+            new FileManifestEntry(string.Empty, data.Length, DateTimeOffset.UtcNow, null, FileEntryKind.File),
+        ]);
+        await using var connection = await AuthenticatedControlConnection.ConnectAsync(IPEndPoint.Parse(Endpoint), Fingerprint);
+        var session = (await connection.SendAsync<TransferStartResponse>(new ControlTransferStartRequest(
+            1,
+            connection.ControllerId,
+            new TransferStartRequest(TransferDirection.Upload, "local", "disconnect-copy.bin", manifest, data.Length, StreamingIntegrity: true)))).Session;
+        var wireBytes = 0L;
+
+        var written = await connection.SendBinaryUploadAsync(
+            new TransferBinaryWriteRequest(session.SessionId, string.Empty, 0, data.Length, null),
+            new InterruptOnceReadStream(data, interruptAfterBytes: 512 * 1024),
+            count => { wireBytes += count; return ValueTask.CompletedTask; });
+        var completed = await connection.SendAsync<TransferCompleteResponse>(
+            new ControlTransferCompleteRequest(1, connection.ControllerId, new TransferCompleteRequest(session.SessionId)));
+
+        Assert.Equal(TransferSessionState.Completed, completed.Session.State);
+        Assert.Equal(data.Length + (512 * 1024), wireBytes);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(data)), written.Receipt.Sha256);
+        var destination = Path.Combine(fileRoot, "disconnect-copy.bin");
+        Assert.Equal(data, await File.ReadAllBytesAsync(destination));
+        await using var destinationStream = File.OpenRead(destination);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(data)), Convert.ToHexString(await SHA256.HashDataAsync(destinationStream)));
+    }
+
+    [Fact]
+    public async Task BinaryUpdateUploadReconnectsAfterControlledMidChunkDisconnect()
+    {
+        var data = RandomNumberGenerator.GetBytes((2 * 1024 * 1024) + 17);
+        var emptyHash = Convert.ToHexString(SHA256.HashData([]));
+        var required = new[]
+        {
+            "Install-RemoteController.ps1", "Update-RemoteController.ps1", "Invoke-RemoteControllerDetachedUpdate.ps1",
+            "Rc.Agent.exe", "Rc.PrivilegedBroker.exe", "Rc.TaskHost.exe", "Rc.UiAgent.exe", "Rc.UiTestApp.exe",
+            "Rc.InteractiveTestApp.exe", "Rc.Cli.exe",
+        };
+        var files = required.Select(path => new UpdatePackageFile(
+            path,
+            path == "Rc.Agent.exe" ? data.Length : 0,
+            path == "Rc.Agent.exe" ? Convert.ToHexString(SHA256.HashData(data)) : emptyHash)).ToArray();
+        var update = new UpdateStartRequest(Guid.NewGuid(), new UpdatePackageManifest("RemoteController", "1.2.3", files));
+        await using var connection = await AuthenticatedControlConnection.ConnectAsync(IPEndPoint.Parse(Endpoint), Fingerprint);
+        using var privateKey = controllerIdentity.GetPrivateKey();
+        var startSignature = ControlRequestAuthentication.SignUpdateStart(connection.AgentDeviceId, connection.ControllerId, update, privateKey);
+        await connection.SendAsync<UpdateStatusResponse>(new ControlUpdateStartRequest(
+            1, connection.ControllerId, update, startSignature));
+        var request = new UpdateBinaryWriteRequest(update.UpdateId, "Rc.Agent.exe", 0, data.Length, Convert.ToHexString(SHA256.HashData(data)));
+        var chunkSignature = ControlRequestAuthentication.SignUpdateWriteBinary(connection.AgentDeviceId, connection.ControllerId, request, privateKey);
+        var wireBytes = 0L;
+
+        var written = await connection.SendBinaryUpdateUploadAsync(
+            request,
+            chunkSignature,
+            new InterruptOnceReadStream(data, interruptAfterBytes: 512 * 1024),
+            count => { wireBytes += count; return ValueTask.CompletedTask; });
+
+        Assert.Equal(data.Length, written.Status.ReceivedBytes);
+        Assert.Equal(data.Length + (512 * 1024), wireBytes);
+        var staged = Path.Combine(agentStore.DataRoot, "updates", update.UpdateId.ToString("N"), "payload", "Rc.Agent.exe");
+        Assert.Equal(data, await File.ReadAllBytesAsync(staged));
+        await using var stagedStream = File.OpenRead(staged);
+        Assert.Equal(request.Sha256, Convert.ToHexString(await SHA256.HashDataAsync(stagedStream)));
+    }
+
+    [Fact]
+    public async Task BinaryCopyDownloadReconnectsAfterControlledMidChunkDisconnect()
+    {
+        var data = RandomNumberGenerator.GetBytes((2 * 1024 * 1024) + 17);
+        await File.WriteAllBytesAsync(Path.Combine(fileRoot, "disconnect-download.bin"), data);
+        await using var connection = await AuthenticatedControlConnection.ConnectAsync(IPEndPoint.Parse(Endpoint), Fingerprint);
+        var session = (await connection.SendAsync<TransferStartResponse>(new ControlTransferStartRequest(
+            1,
+            connection.ControllerId,
+            new TransferStartRequest(
+                TransferDirection.Download,
+                "disconnect-download.bin",
+                "local",
+                new FileManifest("unused", []),
+                data.Length,
+                StreamingIntegrity: true)))).Session;
+        var wireBytes = 0L;
+        await using var destination = new InterruptOnceWriteStream(interruptAfterBytes: 512 * 1024);
+
+        var read = await connection.SendBinaryDownloadAsync(
+            new TransferBinaryReadRequest(session.SessionId, string.Empty, 0, data.Length),
+            destination,
+            count => { wireBytes += count; return ValueTask.CompletedTask; });
+
+        Assert.InRange(destination.InterruptedAtBytes, 512 * 1024, (512 * 1024) + (1024 * 1024));
+        Assert.Equal(data.Length + destination.InterruptedAtBytes, wireBytes);
+        Assert.Equal(data.Length, destination.Length);
+        Assert.Equal(data, destination.ToArray());
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(data)), read.ChunkSha256);
+        Assert.Equal(read.ChunkSha256, Convert.ToHexString(SHA256.HashData(destination.ToArray())));
     }
 
     private static T Deserialize<T>(string json)
@@ -217,4 +353,40 @@ public sealed class CliCommandLiveTests : IAsyncLifetime, IDisposable
     }
 
     private sealed record CommandResult(int ExitCode, string Output, string Error);
+
+    private sealed class InterruptOnceReadStream(byte[] data, int interruptAfterBytes) : MemoryStream(data, writable: false)
+    {
+        private bool interrupted;
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!interrupted && Position >= interruptAfterBytes)
+            {
+                interrupted = true;
+                throw new IOException("Injected transport interruption.");
+            }
+            var maximum = !interrupted
+                ? Math.Min(buffer.Length, interruptAfterBytes - checked((int)Position))
+                : buffer.Length;
+            return base.ReadAsync(buffer[..maximum], cancellationToken);
+        }
+    }
+
+    private sealed class InterruptOnceWriteStream(int interruptAfterBytes) : MemoryStream
+    {
+        private bool interrupted;
+
+        public long InterruptedAtBytes { get; private set; }
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await base.WriteAsync(buffer, cancellationToken);
+            if (!interrupted && Position >= interruptAfterBytes)
+            {
+                interrupted = true;
+                InterruptedAtBytes = Position;
+                throw new IOException("Injected destination interruption.");
+            }
+        }
+    }
 }

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -34,14 +35,16 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
     private readonly AgentStateStore stateStore;
     private readonly AgentOptions options;
     private readonly IAgentUpdateApplier applier;
+    private readonly TimeProvider timeProvider;
     private readonly string updatesRoot;
     private readonly SemaphoreSlim gate = new(1, 1);
 
-    public UpdateService(AgentStateStore stateStore, AgentOptions options, IAgentUpdateApplier applier)
+    public UpdateService(AgentStateStore stateStore, AgentOptions options, IAgentUpdateApplier applier, TimeProvider? timeProvider = null)
     {
         this.stateStore = stateStore ?? throw new ArgumentNullException(nameof(stateStore));
         this.options = options ?? throw new ArgumentNullException(nameof(options));
         this.applier = applier ?? throw new ArgumentNullException(nameof(applier));
+        this.timeProvider = timeProvider ?? TimeProvider.System;
         updatesRoot = Path.Combine(stateStore.DataRoot, "updates");
     }
 
@@ -64,7 +67,7 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
             }
 
             Directory.CreateDirectory(GetPayloadDirectory(request.UpdateId));
-            var now = DateTimeOffset.UtcNow;
+            var now = timeProvider.GetUtcNow();
             var session = new PersistedUpdateSession(request.UpdateId, request.Manifest, UpdateState.Receiving, 0,
                 request.Manifest.Files.Sum(file => file.Length), null, null, now);
             await WriteAsync(session, cancellationToken).ConfigureAwait(false);
@@ -116,7 +119,7 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
                 await using var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true);
                 stream.Position = request.Offset;
                 await stream.WriteAsync(request.Data, cancellationToken).ConfigureAwait(false);
-                session = session with { ReceivedBytes = checked(session.ReceivedBytes + request.Data.Length), UpdatedAtUtc = DateTimeOffset.UtcNow };
+                session = session with { ReceivedBytes = checked(session.ReceivedBytes + request.Data.Length), UpdatedAtUtc = timeProvider.GetUtcNow() };
                 await WriteAsync(session, cancellationToken).ConfigureAwait(false);
                 return ToResponse(session);
             }
@@ -125,6 +128,98 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
                 return ToResponse(session);
             }
             throw new InvalidOperationException("The update chunk offset does not match the staged package.");
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    public async ValueTask<UpdateBinaryWriteResponse> WriteBinaryChunkAsync(
+        UpdateBinaryWriteRequest request,
+        Stream source,
+        Func<UpdateBinaryReadyResponse, Task> signalReady,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(signalReady);
+        if (request.Length < 1 || request.Length > options.MaximumBinaryUpdateChunkBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(request), $"A binary update chunk must contain 1 to {options.MaximumBinaryUpdateChunkBytes} bytes.");
+        }
+        if (!IsSha256(request.Sha256))
+        {
+            throw new InvalidDataException("The binary update chunk SHA-256 is invalid.");
+        }
+
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var session = await ReadAsync(GetSessionPath(request.UpdateId), cancellationToken).ConfigureAwait(false);
+            if (session.State != UpdateState.Receiving)
+            {
+                throw new InvalidOperationException("The update package is no longer accepting data.");
+            }
+
+            var relativePath = NormalizeRelativePath(request.RelativePath);
+            var expected = session.Manifest.Files.SingleOrDefault(file => string.Equals(file.RelativePath, relativePath, StringComparison.Ordinal));
+            if (expected is null)
+            {
+                throw new InvalidOperationException("The binary update chunk path is not present in the package manifest.");
+            }
+            if (request.Offset < 0 || request.Offset + request.Length > expected.Length)
+            {
+                throw new InvalidOperationException("The binary update chunk is outside the declared file bounds.");
+            }
+
+            var path = GetPayloadPath(request.UpdateId, relativePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var existingLength = File.Exists(path) ? new FileInfo(path).Length : 0;
+            if (existingLength >= request.Offset + request.Length &&
+                await MatchesExistingBinaryChunkAsync(path, request, cancellationToken).ConfigureAwait(false))
+            {
+                await signalReady(new UpdateBinaryReadyResponse(request.Length, AlreadyCompleted: true)).ConfigureAwait(false);
+                return new UpdateBinaryWriteResponse(ToResponse(session), request.Sha256);
+            }
+            if (existingLength > request.Offset + request.Length || existingLength < request.Offset)
+            {
+                throw new InvalidOperationException("The binary update chunk offset does not match the staged package.");
+            }
+
+            await signalReady(new UpdateBinaryReadyResponse(request.Length, AlreadyCompleted: false)).ConfigureAwait(false);
+            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(request.Length, 1024 * 1024));
+            try
+            {
+                await using var destination = new FileStream(path, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None, 64 * 1024, useAsync: true);
+                destination.SetLength(request.Offset);
+                destination.Position = request.Offset;
+                var remaining = request.Length;
+                while (remaining > 0)
+                {
+                    var count = await source.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining)), cancellationToken).ConfigureAwait(false);
+                    if (count == 0) throw new EndOfStreamException("The binary update upload ended before the declared chunk length.");
+                    hasher.AppendData(buffer, 0, count);
+                    await destination.WriteAsync(buffer.AsMemory(0, count), cancellationToken).ConfigureAwait(false);
+                    remaining -= count;
+                }
+                await destination.FlushAsync(cancellationToken).ConfigureAwait(false);
+                var actualHash = Convert.ToHexString(hasher.GetHashAndReset());
+                if (!string.Equals(actualHash, request.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    destination.SetLength(request.Offset);
+                    throw new InvalidDataException("The binary update chunk SHA-256 does not match its data.");
+                }
+
+                session = session with { ReceivedBytes = checked(session.ReceivedBytes + request.Length), UpdatedAtUtc = timeProvider.GetUtcNow() };
+                await WriteAsync(session, cancellationToken).ConfigureAwait(false);
+                return new UpdateBinaryWriteResponse(ToResponse(session), actualHash);
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
         }
         finally
         {
@@ -160,7 +255,7 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
                 {
                     State = UpdateState.Applying,
                     InstallationJobId = jobId,
-                    UpdatedAtUtc = DateTimeOffset.UtcNow,
+                    UpdatedAtUtc = timeProvider.GetUtcNow(),
                 };
                 if (applier.UsesDetachedCompletion)
                 {
@@ -169,7 +264,7 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                session = session with { State = UpdateState.Failed, FailureMessage = exception.Message, UpdatedAtUtc = DateTimeOffset.UtcNow };
+                session = session with { State = UpdateState.Failed, FailureMessage = exception.Message, UpdatedAtUtc = timeProvider.GetUtcNow() };
             }
 
             await WriteAsync(session, cancellationToken).ConfigureAwait(false);
@@ -197,7 +292,7 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
                 var usesDetachedCompletion = File.Exists(GetDetachedModePath(request.UpdateId));
                 if (detachedResult is { Succeeded: true, ExitCode: 0 })
                 {
-                    session = session with { State = UpdateState.Succeeded, UpdatedAtUtc = DateTimeOffset.UtcNow };
+                    session = session with { State = UpdateState.Succeeded, UpdatedAtUtc = timeProvider.GetUtcNow() };
                     await WriteAsync(session, cancellationToken).ConfigureAwait(false);
                 }
                 else if (detachedResult is not null)
@@ -206,21 +301,31 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
                     {
                         State = UpdateState.Failed,
                         FailureMessage = detachedResult.FailureMessage ?? $"The detached update process exited with code {detachedResult.ExitCode}.",
-                        UpdatedAtUtc = DateTimeOffset.UtcNow,
+                        UpdatedAtUtc = timeProvider.GetUtcNow(),
                     };
                     await WriteAsync(session, cancellationToken).ConfigureAwait(false);
                 }
                 else if (usesDetachedCompletion)
                 {
                     var job = await stateStore.GetJobSnapshotAsync(jobId, cancellationToken).ConfigureAwait(false);
-                    if (!File.Exists(GetDetachedStartedPath(request.UpdateId)) &&
+                    if (timeProvider.GetUtcNow() - session.UpdatedAtUtc >= options.DetachedUpdateResultTimeout)
+                    {
+                        session = session with
+                        {
+                            State = UpdateState.Failed,
+                            FailureMessage = $"The detached update did not write a durable result within {options.DetachedUpdateResultTimeout.TotalSeconds:F0} seconds. Review '{GetDetachedStdoutPath(request.UpdateId)}' and '{GetDetachedStderrPath(request.UpdateId)}'.",
+                            UpdatedAtUtc = timeProvider.GetUtcNow(),
+                        };
+                        await WriteAsync(session, cancellationToken).ConfigureAwait(false);
+                    }
+                    else if (!File.Exists(GetDetachedStartedPath(request.UpdateId)) &&
                         job is { State: JobState.Exited, ExitCode: not 0 } or { State: JobState.FailedToStart } or { State: JobState.Cancelled } or { State: JobState.InterruptedByReboot } or { State: JobState.HostCrashed })
                     {
                         session = session with
                         {
                             State = UpdateState.Failed,
                             FailureMessage = job.Error?.Message ?? $"The detached update bootstrap ended in state {job.State} with exit code {job.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a"}.",
-                            UpdatedAtUtc = DateTimeOffset.UtcNow,
+                            UpdatedAtUtc = timeProvider.GetUtcNow(),
                         };
                         await WriteAsync(session, cancellationToken).ConfigureAwait(false);
                     }
@@ -230,7 +335,7 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
                     var job = await stateStore.GetJobSnapshotAsync(jobId, cancellationToken).ConfigureAwait(false);
                     if (job is { State: JobState.Exited, ExitCode: 0 })
                     {
-                        session = session with { State = UpdateState.Succeeded, UpdatedAtUtc = DateTimeOffset.UtcNow };
+                        session = session with { State = UpdateState.Succeeded, UpdatedAtUtc = timeProvider.GetUtcNow() };
                         await WriteAsync(session, cancellationToken).ConfigureAwait(false);
                     }
                     else if (job is { State: JobState.Exited } or { State: JobState.FailedToStart } or { State: JobState.Cancelled } or { State: JobState.InterruptedByReboot } or { State: JobState.HostCrashed })
@@ -239,7 +344,7 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
                         {
                             State = UpdateState.Failed,
                             FailureMessage = job.Error?.Message ?? $"The update installation task ended in state {job.State} with exit code {job.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a"}.",
-                            UpdatedAtUtc = DateTimeOffset.UtcNow,
+                            UpdatedAtUtc = timeProvider.GetUtcNow(),
                         };
                         await WriteAsync(session, cancellationToken).ConfigureAwait(false);
                     }
@@ -300,6 +405,10 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
 
     private string GetDetachedStartedPath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-started");
 
+    private string GetDetachedStdoutPath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-stdout.log");
+
+    private string GetDetachedStderrPath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-stderr.log");
+
     private string GetDetachedModePath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-detached");
 
     private string GetSessionDirectory(Guid updateId) => Path.Combine(updatesRoot, updateId.ToString("N"));
@@ -336,6 +445,30 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
         stream.Position = request.Offset;
         await stream.ReadExactlyAsync(existing, cancellationToken).ConfigureAwait(false);
         return CryptographicOperations.FixedTimeEquals(existing, request.Data);
+    }
+
+    private static async Task<bool> MatchesExistingBinaryChunkAsync(string path, UpdateBinaryWriteRequest request, CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+        stream.Position = request.Offset;
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(request.Length, 1024 * 1024));
+        try
+        {
+            var remaining = request.Length;
+            while (remaining > 0)
+            {
+                var count = await stream.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining)), cancellationToken).ConfigureAwait(false);
+                if (count == 0) return false;
+                hasher.AppendData(buffer, 0, count);
+                remaining -= count;
+            }
+            return string.Equals(Convert.ToHexString(hasher.GetHashAndReset()), request.Sha256, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     private static async Task<string> HashFileAsync(string path, CancellationToken cancellationToken)
@@ -399,7 +532,12 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
         string? FailureMessage,
         DateTimeOffset UpdatedAtUtc);
 
-    private sealed record DetachedUpdateResult(bool Succeeded, int ExitCode, string? FailureMessage);
+    private sealed record DetachedUpdateResult(
+        bool Succeeded,
+        int ExitCode,
+        string? FailureMessage,
+        string? StandardOutputPath = null,
+        string? StandardErrorPath = null);
 }
 
 internal sealed class TaskRegistryUpdateApplier : IAgentUpdateApplier
@@ -448,6 +586,8 @@ internal sealed class TaskRegistryUpdateApplier : IAgentUpdateApplier
         var readyPath = Path.Combine(sessionDirectory, "update-ready");
         var resultPath = Path.Combine(sessionDirectory, "update-result.json");
         var startedPath = Path.Combine(sessionDirectory, "update-started");
+        var stdoutPath = Path.Combine(sessionDirectory, "update-stdout.log");
+        var stderrPath = Path.Combine(sessionDirectory, "update-stderr.log");
         var taskSuffix = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sessionDirectory)))[..16];
         var taskName = $"RemoteControllerUpdate-{taskSuffix}";
         var runnerArguments = string.Join(' ',
@@ -456,7 +596,8 @@ internal sealed class TaskRegistryUpdateApplier : IAgentUpdateApplier
             "-InstallPath", QuoteCommandLine(installPath), "-DataRoot", QuoteCommandLine(dataRoot),
             "-TcpPort", tcpPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
             "-ReadyPath", QuoteCommandLine(readyPath), "-StartedPath", QuoteCommandLine(startedPath),
-            "-ResultPath", QuoteCommandLine(resultPath), "-TaskName", QuoteCommandLine(taskName));
+            "-ResultPath", QuoteCommandLine(resultPath), "-StandardOutputPath", QuoteCommandLine(stdoutPath),
+            "-StandardErrorPath", QuoteCommandLine(stderrPath), "-TaskName", QuoteCommandLine(taskName));
 
         return string.Join("; ",
             "$ErrorActionPreference='Stop'",

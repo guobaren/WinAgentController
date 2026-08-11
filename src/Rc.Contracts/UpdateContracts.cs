@@ -53,6 +53,17 @@ public sealed class UpdateWriteChunkRequest
     public string Sha256 { get; }
 }
 
+public sealed record UpdateBinaryWriteRequest(
+    Guid UpdateId,
+    string RelativePath,
+    long Offset,
+    int Length,
+    string Sha256);
+
+public sealed record UpdateBinaryReadyResponse(int Length, bool AlreadyCompleted);
+
+public sealed record UpdateBinaryWriteResponse(UpdateStatusResponse Status, string Sha256);
+
 public sealed record UpdateCompleteRequest(Guid UpdateId);
 
 public sealed record UpdateStatusRequest(Guid UpdateId);

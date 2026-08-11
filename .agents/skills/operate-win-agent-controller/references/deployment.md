@@ -74,7 +74,9 @@ rcctl update status 192.168.1.50:43001 --fingerprint <SHA256> --update <GUID> --
 
 The Agent persists `Applying`, then a Broker bootstrap job registers a detached `SYSTEM` scheduled task. The detached runner waits for `update-ready`, writes `update-started`, stops UI/Agent/Broker, installs with rollback protection, and atomically writes `update-result.json`. The restarted Agent uses that result instead of treating the expected Broker interruption as the final outcome.
 
-The updater retains `C:\ProgramData\RemoteController`, backs up the installed directory, and restores it when the install script fails. A `Succeeded` result is not a post-update service health check. Verify the pinned fingerprint, pairing, a harmless authenticated command, Agent/Broker status, UI registration, and relevant UI acceptance behavior. An older Agent without detached-update support needs one trusted local or recovery-channel refresh first.
+The updater retains `C:\ProgramData\RemoteController`, backs up the installed directory, and restores it when the install script fails. A `Succeeded` result is not a post-update service health check. Verify the pinned fingerprint, pairing, a harmless authenticated command, Agent/Broker status, UI registration, and relevant UI acceptance behavior. An Agent without detached-update and binary-update support needs one trusted local or recovery-channel refresh first.
+
+Current Agents must advertise `binary-update-v1`. The CLI streams signed update chunks as raw TLS bytes directly into the update session under DataRoot, using up to 64 MiB chunks and online SHA-256 verification; this staging path is separate from `RC_AGENT_FILE_ROOT`. When the capability is missing, the CLI requires an Agent upgrade instead of falling back to JSON/Base64. The CLI reports current/min/max/average upload speed before detached installation begins, so do not mix that upload timing with the later `--wait` lifecycle duration.
 
 For a local package refresh, rerun one-click setup with `RegenerateIdentity=false` unless re-pairing is intentional.
 

@@ -4,6 +4,7 @@ using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Rc.Cli.Targets;
 using Rc.Contracts;
 
 namespace Rc.Cli.Security;
@@ -32,7 +33,11 @@ internal sealed class AuthenticatedControlConnection : IAsyncDisposable
 
     public bool SupportsStreamingIntegrity { get; private set; }
 
+    public bool SupportsBinaryUpdate { get; private set; }
+
     public int MaximumBinaryTransferChunkBytes { get; private set; } = 4 * 1024 * 1024;
+
+    public int MaximumBinaryUpdateChunkBytes { get; private set; } = 256 * 1024;
 
     public static async Task<AuthenticatedControlConnection> ConnectAsync(IPEndPoint endpoint, string fingerprint)
     {
@@ -74,21 +79,50 @@ internal sealed class AuthenticatedControlConnection : IAsyncDisposable
         }
     }
 
-    public async Task<TransferBinaryWriteResponse> SendBinaryUploadAsync(TransferBinaryWriteRequest request, ReadOnlyMemory<byte> data)
+    public async Task<TransferBinaryWriteResponse> SendBinaryUploadAsync(
+        TransferBinaryWriteRequest request,
+        ReadOnlyMemory<byte> data,
+        Func<int, ValueTask>? reportProgress = null)
     {
         using var stream = new MemoryStream(data.ToArray(), writable: false);
-        return await SendBinaryUploadAsync(request, stream).ConfigureAwait(false);
+        return await SendBinaryUploadAsync(request, stream, reportProgress).ConfigureAwait(false);
     }
 
-    public async Task<TransferBinaryWriteResponse> SendBinaryUploadAsync(TransferBinaryWriteRequest request, Stream source)
+    public async Task<TransferBinaryWriteResponse> SendBinaryUploadAsync(
+        TransferBinaryWriteRequest request,
+        Stream source,
+        Func<int, ValueTask>? reportProgress = null)
     {
         ArgumentNullException.ThrowIfNull(source);
         await requestGate.WaitAsync().ConfigureAwait(false);
         try
         {
             await EnsureSessionAsync().ConfigureAwait(false);
-            var ready = await SendCoreAsync<TransferBinaryReadyResponse>(
-                new ControlTransferWriteBinaryRequest(1, ControllerId, request)).ConfigureAwait(false);
+            var sourcePosition = source.CanSeek ? source.Position : -1;
+            try
+            {
+                return await SendBinaryUploadCoreAsync(request, source, reportProgress).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (sourcePosition >= 0 && exception is IOException or SocketException)
+            {
+                source.Position = sourcePosition;
+                await OpenSessionAsync().ConfigureAwait(false);
+                return await SendBinaryUploadCoreAsync(request, source, reportProgress).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            requestGate.Release();
+        }
+    }
+
+    private async Task<TransferBinaryWriteResponse> SendBinaryUploadCoreAsync(
+        TransferBinaryWriteRequest request,
+        Stream source,
+        Func<int, ValueTask>? reportProgress)
+    {
+        var ready = await SendCoreAsync<TransferBinaryReadyResponse>(
+            new ControlTransferWriteBinaryRequest(1, ControllerId, request)).ConfigureAwait(false);
             if (ready.Length != request.Length)
             {
                 throw new InvalidDataException("The agent returned an invalid binary upload length.");
@@ -106,6 +140,10 @@ internal sealed class AuthenticatedControlConnection : IAsyncDisposable
                         if (count == 0) throw new EndOfStreamException("The upload source ended before the declared chunk length.");
                         hasher.AppendData(buffer, 0, count);
                         await transport!.Stream.WriteAsync(buffer.AsMemory(0, count)).ConfigureAwait(false);
+                        if (reportProgress is not null)
+                        {
+                            await reportProgress(count).ConfigureAwait(false);
+                        }
                         remaining -= count;
                     }
                 }
@@ -123,6 +161,30 @@ internal sealed class AuthenticatedControlConnection : IAsyncDisposable
                 return response;
             }
             return await ReadCoreAsync<TransferBinaryWriteResponse>().ConfigureAwait(false);
+    }
+
+    public async Task<TransferBinaryReadResponse> SendBinaryDownloadAsync(
+        TransferBinaryReadRequest request,
+        Stream destination,
+        Func<int, ValueTask>? reportProgress = null)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        await requestGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await EnsureSessionAsync().ConfigureAwait(false);
+            var destinationPosition = destination.CanSeek ? destination.Position : -1;
+            try
+            {
+                return await SendBinaryDownloadCoreAsync(request, destination, reportProgress).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (destinationPosition >= 0 && exception is IOException or SocketException)
+            {
+                destination.Position = destinationPosition;
+                destination.SetLength(destinationPosition);
+                await OpenSessionAsync().ConfigureAwait(false);
+                return await SendBinaryDownloadCoreAsync(request, destination, reportProgress).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -130,15 +192,13 @@ internal sealed class AuthenticatedControlConnection : IAsyncDisposable
         }
     }
 
-    public async Task<TransferBinaryReadResponse> SendBinaryDownloadAsync(TransferBinaryReadRequest request, Stream destination)
+    private async Task<TransferBinaryReadResponse> SendBinaryDownloadCoreAsync(
+        TransferBinaryReadRequest request,
+        Stream destination,
+        Func<int, ValueTask>? reportProgress)
     {
-        ArgumentNullException.ThrowIfNull(destination);
-        await requestGate.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            await EnsureSessionAsync().ConfigureAwait(false);
-            var ready = await SendCoreAsync<TransferBinaryReadyResponse>(
-                new ControlTransferReadBinaryRequest(1, ControllerId, request)).ConfigureAwait(false);
+        var ready = await SendCoreAsync<TransferBinaryReadyResponse>(
+            new ControlTransferReadBinaryRequest(1, ControllerId, request)).ConfigureAwait(false);
             if (ready.Length < 0 || ready.Length > request.MaximumBytes)
             {
                 throw new InvalidDataException("The agent returned an invalid binary download length.");
@@ -155,6 +215,10 @@ internal sealed class AuthenticatedControlConnection : IAsyncDisposable
                     var count = await transport.Stream.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining))).ConfigureAwait(false);
                     if (count == 0) throw new EndOfStreamException("The binary download ended before the declared chunk length.");
                     hasher.AppendData(buffer, 0, count);
+                    if (reportProgress is not null)
+                    {
+                        await reportProgress(count).ConfigureAwait(false);
+                    }
                     await destination.WriteAsync(buffer.AsMemory(0, count)).ConfigureAwait(false);
                     remaining -= count;
                 }
@@ -170,11 +234,82 @@ internal sealed class AuthenticatedControlConnection : IAsyncDisposable
                 throw new InvalidDataException("Downloaded binary chunk hash mismatch.");
             }
             return response;
+    }
+
+    public async Task<UpdateBinaryWriteResponse> SendBinaryUpdateUploadAsync(
+        UpdateBinaryWriteRequest request,
+        byte[] signature,
+        Stream source,
+        Func<int, ValueTask>? reportProgress = null)
+    {
+        ArgumentNullException.ThrowIfNull(signature);
+        ArgumentNullException.ThrowIfNull(source);
+        await requestGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await EnsureSessionAsync().ConfigureAwait(false);
+            var sourcePosition = source.CanSeek ? source.Position : -1;
+            try
+            {
+                return await SendBinaryUpdateUploadCoreAsync(request, signature, source, reportProgress).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (sourcePosition >= 0 && exception is IOException or SocketException)
+            {
+                source.Position = sourcePosition;
+                await OpenSessionAsync().ConfigureAwait(false);
+                return await SendBinaryUpdateUploadCoreAsync(request, signature, source, reportProgress).ConfigureAwait(false);
+            }
         }
         finally
         {
             requestGate.Release();
         }
+    }
+
+    private async Task<UpdateBinaryWriteResponse> SendBinaryUpdateUploadCoreAsync(
+        UpdateBinaryWriteRequest request,
+        byte[] signature,
+        Stream source,
+        Func<int, ValueTask>? reportProgress)
+    {
+        var ready = await SendCoreAsync<UpdateBinaryReadyResponse>(
+            new ControlUpdateWriteBinaryRequest(1, ControllerId, request, signature)).ConfigureAwait(false);
+        if (ready.Length != request.Length)
+        {
+            throw new InvalidDataException("The agent returned an invalid binary update upload length.");
+        }
+        if (!ready.AlreadyCompleted)
+        {
+            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var buffer = ArrayPool<byte>.Shared.Rent(Math.Min(Math.Max(request.Length, 1), 1024 * 1024));
+            try
+            {
+                var remaining = request.Length;
+                while (remaining > 0)
+                {
+                    var count = await source.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining))).ConfigureAwait(false);
+                    if (count == 0) throw new EndOfStreamException("The update upload source ended before the declared chunk length.");
+                    hasher.AppendData(buffer, 0, count);
+                    await transport!.Stream.WriteAsync(buffer.AsMemory(0, count)).ConfigureAwait(false);
+                    if (reportProgress is not null) await reportProgress(count).ConfigureAwait(false);
+                    remaining -= count;
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+            await transport!.Stream.FlushAsync().ConfigureAwait(false);
+            var response = await ReadCoreAsync<UpdateBinaryWriteResponse>().ConfigureAwait(false);
+            var actualHash = Convert.ToHexString(hasher.GetHashAndReset());
+            if (!string.Equals(actualHash, request.Sha256, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(response.Sha256, actualHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("Uploaded binary update chunk hash mismatch.");
+            }
+            return response;
+        }
+        return await ReadCoreAsync<UpdateBinaryWriteResponse>().ConfigureAwait(false);
     }
 
     private async Task OpenSessionAsync()
@@ -187,9 +322,13 @@ internal sealed class AuthenticatedControlConnection : IAsyncDisposable
         var hello = await SendCoreAsync<ControlHelloResponse>(new ControlHelloRequest(1)).ConfigureAwait(false);
         SupportsBinaryTransfer = hello.Capabilities.Contains(ControlCapabilities.BinaryTransferV1, StringComparer.Ordinal);
         SupportsStreamingIntegrity = hello.Capabilities.Contains(ControlCapabilities.StreamingIntegrityV2, StringComparer.Ordinal);
+        SupportsBinaryUpdate = hello.Capabilities.Contains(ControlCapabilities.BinaryUpdateV1, StringComparer.Ordinal);
         MaximumBinaryTransferChunkBytes = hello.MaximumBinaryTransferChunkBytes is > 0
             ? hello.MaximumBinaryTransferChunkBytes.Value
             : 4 * 1024 * 1024;
+        MaximumBinaryUpdateChunkBytes = hello.MaximumBinaryUpdateChunkBytes is > 0
+            ? hello.MaximumBinaryUpdateChunkBytes.Value
+            : 256 * 1024;
         if (!hello.HasPairedController)
         {
             throw new InvalidOperationException("This agent has no paired controller. Run rcctl pair first.");
@@ -212,6 +351,19 @@ internal sealed class AuthenticatedControlConnection : IAsyncDisposable
             AgentDeviceId = challenge.AgentDeviceId;
             ControllerId = authenticated.ControllerId;
             ExpiresAtUtc = authenticated.ExpiresAtUtc;
+            try
+            {
+                await new ControllerTargetStore().RememberSuccessfulConnectionAsync(
+                    AgentDeviceId,
+                    endpoint,
+                    fingerprint).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException(
+                    $"The authenticated session opened, but its target profile could not be saved: {exception.Message}",
+                    exception);
+            }
         }
         finally
         {

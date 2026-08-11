@@ -21,12 +21,15 @@ public sealed record ControlHelloResponse(
     public IReadOnlyList<string> Capabilities { get; init; } = [];
 
     public int? MaximumBinaryTransferChunkBytes { get; init; }
+
+    public int? MaximumBinaryUpdateChunkBytes { get; init; }
 }
 
 public static class ControlCapabilities
 {
     public const string BinaryTransferV1 = "binary-transfer-v1";
     public const string StreamingIntegrityV2 = "streaming-integrity-v2";
+    public const string BinaryUpdateV1 = "binary-update-v1";
 }
 
 public static class ControlMessageKinds
@@ -64,6 +67,7 @@ public const string FileManifest = "file_manifest";
     public const string UiCommand = "ui_command";
     public const string UpdateStart = "update_start";
     public const string UpdateWriteChunk = "update_write_chunk";
+    public const string UpdateWriteBinary = "update_write_binary";
     public const string UpdateComplete = "update_complete";
     public const string UpdateStatus = "update_status";
 }
@@ -260,5 +264,6 @@ public sealed record ControlTransferCompleteRequest(int ProtocolVersion, string 
 public sealed record ControlTransferStatusRequest(int ProtocolVersion, string ControllerId, TransferStatusRequest Request) { public string Kind => ControlMessageKinds.TransferStatus; }
 public sealed record ControlUpdateStartRequest(int ProtocolVersion, string ControllerId, UpdateStartRequest Request, byte[] Signature) { public string Kind => ControlMessageKinds.UpdateStart; }
 public sealed record ControlUpdateWriteChunkRequest(int ProtocolVersion, string ControllerId, UpdateWriteChunkRequest Request, byte[] Signature) { public string Kind => ControlMessageKinds.UpdateWriteChunk; }
+public sealed record ControlUpdateWriteBinaryRequest(int ProtocolVersion, string ControllerId, UpdateBinaryWriteRequest Request, byte[] Signature) { public string Kind => ControlMessageKinds.UpdateWriteBinary; }
 public sealed record ControlUpdateCompleteRequest(int ProtocolVersion, string ControllerId, UpdateCompleteRequest Request, byte[] Signature) { public string Kind => ControlMessageKinds.UpdateComplete; }
 public sealed record ControlUpdateStatusRequest(int ProtocolVersion, string ControllerId, UpdateStatusRequest Request, byte[] Signature) { public string Kind => ControlMessageKinds.UpdateStatus; }

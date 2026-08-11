@@ -11,7 +11,7 @@ namespace Rc.Cli.Commands;
 
 internal static class UpdateCommand
 {
-    private const int DefaultChunkSize = 256 * 1024;
+    private const int PreferredBinaryChunkSize = 64 * 1024 * 1024;
 
     public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error)
     {
@@ -48,12 +48,13 @@ internal static class UpdateCommand
     private static async Task<int> ApplyAsync(IPEndPoint endpoint, string fingerprint, Dictionary<string, string?> options, TextWriter output, TextWriter error)
     {
         var packagePath = options.GetValueOrDefault("package") ?? throw new ArgumentException("--package <directory> is required.");
-        var chunkSize = GetPositiveInt(options, "chunk-size", DefaultChunkSize, maximum: DefaultChunkSize);
         var timeout = TimeSpan.FromSeconds(GetPositiveInt(options, "timeout-seconds", 180, maximum: 3600));
         var manifest = await BuildManifestAsync(packagePath, options.GetValueOrDefault("version")).ConfigureAwait(false);
         var updateId = Guid.NewGuid();
 
         await using var connection = await AuthenticatedControlConnection.ConnectAsync(endpoint, fingerprint).ConfigureAwait(false);
+        EnsureCurrentAgentCapability(connection.SupportsBinaryUpdate);
+        var chunkSize = ResolveChunkSize(connection.MaximumBinaryUpdateChunkBytes, options.GetValueOrDefault("chunk-size"));
         using var identity = await ControllerIdentity.LoadOrCreateAsync(Environment.MachineName).ConfigureAwait(false);
         using var privateKey = identity.GetPrivateKey();
         var started = await SendStartAsync(connection, identity.ControllerId, privateKey, new UpdateStartRequest(updateId, manifest)).ConfigureAwait(false);
@@ -63,7 +64,9 @@ internal static class UpdateCommand
         }
 
         var total = manifest.Files.Sum(file => file.Length);
-        var uploaded = 0L;
+        await error.WriteLineAsync($"[rcctl] updateId={updateId} transport=binary-update-v1 chunkBytes={chunkSize}").ConfigureAwait(false);
+        await error.FlushAsync().ConfigureAwait(false);
+        var speed = new TransferSpeedReporter(error);
         foreach (var file in manifest.Files)
         {
             var fullPath = Path.Combine(Path.GetFullPath(packagePath), file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
@@ -71,14 +74,14 @@ internal static class UpdateCommand
             for (var offset = 0L; offset < file.Length; offset += chunkSize)
             {
                 var count = checked((int)Math.Min(chunkSize, file.Length - offset));
-                var data = new byte[count];
-                await stream.ReadExactlyAsync(data).ConfigureAwait(false);
-                var request = new UpdateWriteChunkRequest(updateId, file.RelativePath, offset, data, Convert.ToHexString(SHA256.HashData(data)));
-                await SendChunkAsync(connection, identity.ControllerId, privateKey, request).ConfigureAwait(false);
-                uploaded += count;
-                await error.WriteLineAsync($"[rcctl] update {uploaded}/{total} bytes").ConfigureAwait(false);
+                var hash = await HashRangeAsync(stream, offset, count).ConfigureAwait(false);
+                stream.Position = offset;
+                var request = new UpdateBinaryWriteRequest(updateId, file.RelativePath, offset, count, hash);
+                await SendBinaryChunkAsync(connection, identity.ControllerId, privateKey, request, stream, speed.RecordBytesAsync).ConfigureAwait(false);
             }
         }
+        speed.Stop();
+        await speed.CompleteAsync(total).ConfigureAwait(false);
 
         var completed = await SendCompleteAsync(connection, identity.ControllerId, privateKey, new UpdateCompleteRequest(updateId)).ConfigureAwait(false);
         if (!options.ContainsKey("wait") || completed.State is UpdateState.Succeeded or UpdateState.Failed)
@@ -141,13 +144,6 @@ internal static class UpdateCommand
         finally { CryptographicOperations.ZeroMemory(signature); }
     }
 
-    private static async Task<UpdateStatusResponse> SendChunkAsync(AuthenticatedControlConnection connection, string controllerId, ECDsa privateKey, UpdateWriteChunkRequest request)
-    {
-        var signature = ControlRequestAuthentication.SignUpdateWriteChunk(connection.AgentDeviceId, controllerId, request, privateKey);
-        try { return await connection.SendAsync<UpdateStatusResponse>(new ControlUpdateWriteChunkRequest(1, controllerId, request, signature), retryOnDisconnect: true).ConfigureAwait(false); }
-        finally { CryptographicOperations.ZeroMemory(signature); }
-    }
-
     private static async Task<UpdateStatusResponse> SendCompleteAsync(AuthenticatedControlConnection connection, string controllerId, ECDsa privateKey, UpdateCompleteRequest request)
     {
         var signature = ControlRequestAuthentication.SignUpdateComplete(connection.AgentDeviceId, controllerId, request, privateKey);
@@ -186,6 +182,26 @@ internal static class UpdateCommand
         return new UpdatePackageManifest("RemoteController", resolvedVersion, files);
     }
 
+    private static async Task<UpdateStatusResponse> SendBinaryChunkAsync(
+        AuthenticatedControlConnection connection,
+        string controllerId,
+        ECDsa privateKey,
+        UpdateBinaryWriteRequest request,
+        Stream source,
+        Func<int, ValueTask> reportProgress)
+    {
+        var signature = ControlRequestAuthentication.SignUpdateWriteBinary(connection.AgentDeviceId, controllerId, request, privateKey);
+        try
+        {
+            var response = await connection.SendBinaryUpdateUploadAsync(request, signature, source, reportProgress).ConfigureAwait(false);
+            return response.Status;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(signature);
+        }
+    }
+
     internal static string? NormalizePackageVersion(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
@@ -195,10 +211,44 @@ internal static class UpdateCommand
         return Version.TryParse(candidate, out _) ? candidate : null;
     }
 
+    internal static void EnsureCurrentAgentCapability(bool supportsBinaryUpdate)
+    {
+        if (!supportsBinaryUpdate)
+        {
+            throw new InvalidOperationException("The target Agent is outdated. Upgrade it to a version that supports binary-update-v1.");
+        }
+    }
+
+    internal static int ResolveChunkSize(int advertisedMaximum, string? requested)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(advertisedMaximum, 1);
+        var defaultValue = Math.Min(PreferredBinaryChunkSize, advertisedMaximum);
+        if (requested is null) return defaultValue;
+        return int.TryParse(requested, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) && parsed > 0 && parsed <= advertisedMaximum
+            ? parsed
+            : throw new ArgumentException($"--chunk-size must be between 1 and {advertisedMaximum}.");
+    }
+
     private static async Task<string> HashFileAsync(string path)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
         return Convert.ToHexString(await SHA256.HashDataAsync(stream).ConfigureAwait(false));
+    }
+
+    private static async Task<string> HashRangeAsync(Stream stream, long offset, int length)
+    {
+        stream.Position = offset;
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[Math.Min(length, 1024 * 1024)];
+        var remaining = length;
+        while (remaining > 0)
+        {
+            var count = await stream.ReadAsync(buffer.AsMemory(0, Math.Min(buffer.Length, remaining))).ConfigureAwait(false);
+            if (count == 0) throw new EndOfStreamException("The update package file ended before the declared chunk length.");
+            hasher.AppendData(buffer, 0, count);
+            remaining -= count;
+        }
+        return Convert.ToHexString(hasher.GetHashAndReset());
     }
 
     private static async Task<int> WriteResultAsync(UpdateStatusResponse status, bool text, TextWriter output)
@@ -269,5 +319,5 @@ internal static class UpdateCommand
     }
 
     private static string Usage() =>
-        "Usage: rcctl update apply <IP:port> --fingerprint <SHA256> --package <directory> [--version <version>] [--chunk-size <1-262144>] [--wait] [--timeout-seconds <1-3600>] [--text] | rcctl update status <IP:port> --fingerprint <SHA256> --update <GUID> [--text]";
+        "Usage: rcctl update apply <IP:port> --fingerprint <SHA256> --package <directory> [--version <version>] [--chunk-size <bytes>] [--wait] [--timeout-seconds <1-3600>] [--text] | rcctl update status <IP:port> --fingerprint <SHA256> --update <GUID> [--text]";
 }

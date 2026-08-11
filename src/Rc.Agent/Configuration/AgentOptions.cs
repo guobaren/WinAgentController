@@ -40,9 +40,15 @@ public sealed record AgentOptions
 
     public int MaximumTransferChunkBytes { get; init; } = checked((int)ReadLong("RC_TRANSFER_MAX_CHUNK_BYTES", 64L * 1024 * 1024));
 
+    public long StreamingTransferCheckpointBytes { get; init; } = ReadLong("RC_TRANSFER_STREAMING_CHECKPOINT_BYTES", 256L * 1024 * 1024);
+
     public long MaximumUpdatePackageBytes { get; init; } = ReadLong("RC_UPDATE_MAX_PACKAGE_BYTES", 1024L * 1024 * 1024);
 
     public int MaximumUpdateChunkBytes { get; init; } = checked((int)ReadLong("RC_UPDATE_MAX_CHUNK_BYTES", 256 * 1024));
+
+    public int MaximumBinaryUpdateChunkBytes { get; init; } = checked((int)ReadLong("RC_UPDATE_MAX_BINARY_CHUNK_BYTES", 64L * 1024 * 1024));
+
+    public TimeSpan DetachedUpdateResultTimeout { get; init; } = TimeSpan.FromSeconds(ReadLong("RC_UPDATE_DETACHED_RESULT_TIMEOUT_SECONDS", 3600));
 
     public int MaximumAtomicWriteBytes { get; init; } = checked((int)ReadLong("RC_FILE_MAX_WRITE_BYTES", 16L * 1024 * 1024));
 

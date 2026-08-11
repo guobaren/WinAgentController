@@ -9,7 +9,6 @@ namespace Rc.Agent.Files;
 
 public sealed class FileTransferService : IDisposable
 {
-    private const long StreamingCheckpointBytes = 256L * 1024 * 1024;
     private readonly AgentStateStore store;
     private readonly AgentOptions options;
     private readonly SafeFileRoot paths;
@@ -205,7 +204,7 @@ public sealed class FileTransferService : IDisposable
             else
             {
                 var pendingBytes = unpersistedStreamingBytes.AddOrUpdate(updated.SessionId, request.Length, (_, current) => current + request.Length);
-                if (pendingBytes >= StreamingCheckpointBytes)
+                if (pendingBytes >= options.StreamingTransferCheckpointBytes)
                 {
                     await store.SaveTransferSessionAsync(updated, cancellationToken).ConfigureAwait(false);
                     unpersistedStreamingBytes[updated.SessionId] = 0;

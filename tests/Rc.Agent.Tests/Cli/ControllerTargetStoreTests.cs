@@ -50,6 +50,77 @@ public sealed class ControllerTargetStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task SuccessfulConnectionCreatesAutomaticTargetAndMakesItCurrent()
+    {
+        var store = new ControllerTargetStore(root);
+
+        var profile = await store.RememberSuccessfulConnectionAsync(
+            "0123456789abcdef0123456789abcdef",
+            IPEndPoint.Parse("192.168.10.5:43001"),
+            Fingerprint);
+
+        var snapshot = await new ControllerTargetStore(root).GetSnapshotAsync();
+        Assert.Equal("agent-0123456789abcdef", profile.Name);
+        Assert.Equal(profile.Name, snapshot.CurrentTarget);
+        Assert.Equal(profile, Assert.Single(snapshot.Targets));
+    }
+
+    [Fact]
+    public async Task SuccessfulConnectionRefreshesExistingNamedTargetWithoutAddingDuplicate()
+    {
+        var store = new ControllerTargetStore(root);
+        await store.AddAsync("lab", "device-1", IPEndPoint.Parse("192.168.10.5:43001"), Fingerprint);
+
+        var remembered = await store.RememberSuccessfulConnectionAsync(
+            "device-1",
+            IPEndPoint.Parse("192.168.10.9:43002"),
+            Fingerprint);
+
+        var snapshot = await store.GetSnapshotAsync();
+        Assert.Equal("lab", remembered.Name);
+        Assert.Equal("192.168.10.9:43002", remembered.Endpoint);
+        Assert.Single(snapshot.Targets);
+    }
+
+    [Fact]
+    public async Task SuccessfulConnectionReplacesStoredFingerprintForTheSameDeviceId()
+    {
+        var store = new ControllerTargetStore(root);
+        await store.AddAsync("lab", "device-1", IPEndPoint.Parse("192.168.10.5:43001"), Fingerprint);
+
+        var remembered = await store.RememberSuccessfulConnectionAsync(
+            "device-1",
+            IPEndPoint.Parse("192.168.10.9:43002"),
+            new string('B', 64));
+
+        var snapshot = await store.GetSnapshotAsync();
+        Assert.Equal("lab", remembered.Name);
+        Assert.Equal(new string('B', 64), remembered.CertificateSha256Fingerprint);
+        Assert.Equal("192.168.10.9:43002", remembered.Endpoint);
+        Assert.Equal("lab", snapshot.CurrentTarget);
+        Assert.Equal(remembered, Assert.Single(snapshot.Targets));
+    }
+
+    [Fact]
+    public async Task SuccessfulConnectionRemovesEverySupersededFingerprintForTheSameDeviceId()
+    {
+        var store = new ControllerTargetStore(root);
+        await store.AddAsync("first", "device-1", IPEndPoint.Parse("192.168.10.5:43001"), Fingerprint);
+        await store.AddAsync("current", "device-1", IPEndPoint.Parse("192.168.10.6:43001"), Fingerprint);
+        await store.SetCurrentAsync("current");
+
+        var remembered = await store.RememberSuccessfulConnectionAsync(
+            "device-1",
+            IPEndPoint.Parse("192.168.10.9:43002"),
+            new string('B', 64));
+
+        var snapshot = await store.GetSnapshotAsync();
+        Assert.Equal("current", remembered.Name);
+        Assert.Equal("current", snapshot.CurrentTarget);
+        Assert.Equal(remembered, Assert.Single(snapshot.Targets));
+    }
+
+    [Fact]
     public async Task ResolverExpandsNamedAndCurrentTargets()
     {
         var store = new ControllerTargetStore(root);
@@ -121,6 +192,23 @@ public sealed class ControllerTargetStoreTests : IDisposable
         var fingerprintIndex = Array.IndexOf(resolved.Arguments, "--fingerprint");
         Assert.True(fingerprintIndex >= 0);
         Assert.Equal(Fingerprint, resolved.Arguments[fingerprintIndex + 1]);
+    }
+
+    [Theory]
+    [InlineData("job")]
+    [InlineData("fs")]
+    [InlineData("copy")]
+    [InlineData("ui")]
+    [InlineData("update")]
+    public async Task ResolverLeavesMissingOperationForTheCommandParser(string command)
+    {
+        var store = new ControllerTargetStore(root);
+        await store.AddAsync("lab", "device-1", IPEndPoint.Parse("192.168.10.5:43001"), Fingerprint);
+
+        var resolved = await new TargetArgumentResolver(store).ResolveAsync([command]);
+
+        Assert.True(resolved.Success);
+        Assert.Equal([command], resolved.Arguments);
     }
 
     [Fact]
