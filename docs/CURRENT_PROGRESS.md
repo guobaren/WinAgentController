@@ -1,12 +1,12 @@
 # WinAgentController 当前进度
 
 - 更新时间：2026-08-12
-- 基线提交：`main`（本轮新增测试与升级链路修复尚未提交）
+- 基线提交：`main` @ `5dde471`（功能、测试与此前文档已提交并推送；本轮仅增量更新验收文档）
 - 事实来源优先级：当前实现与 CLI 用法 > 部署脚本 > `README.md` > 历史记录。
 
 ## 当前结论
 
-WinAgentController 已具备局域网发现、TLS 指纹固定、单控制端配对、成功连接后自动登记目标档案、普通/提权命令、持久任务、受限文件传输、桌面 UI 自动化、Chromium 浏览器控制和完整包更新能力。当前 copy/update 强制使用认证 TLS 二进制能力，不再回退旧 Agent JSON 路径；单块断线会重新认证并重发，完成统计区分逻辑、线上和重传字节。detached 更新持久化 stdout/stderr 且具备结果超时。SDK 8.0.422 下 Debug/Release 完整测试均为 306/306。
+WinAgentController 已具备局域网发现、TLS 指纹固定、单控制端配对、成功连接后自动登记目标档案、普通/提权命令、持久任务、受限文件传输、桌面 UI 自动化、Chromium 浏览器控制和完整包更新能力。当前 copy/update 强制使用认证 TLS 二进制能力，不再回退旧 Agent JSON 路径；单块断线会重新认证并重发，完成统计区分逻辑、线上和重传字节。跨机器 1 GiB 已在 256 MiB 检查点后真实终止目标 Agent，并以同一 session 自动续传完成且三方 SHA-256 一致。detached 更新持久化 stdout/stderr 且具备结果超时。SDK 8.0.422 下 Debug/Release 完整测试均为 306/306。
 
 ## 能力状态
 
@@ -31,7 +31,7 @@ WinAgentController 已具备局域网发现、TLS 指纹固定、单控制端配
 | README / 操作 Skill | Pass | README 与仓库 Skill 已同步新版能力要求；本机/对端安装副本均 5/5 哈希一致，旧副本已备份，对端 staging 已清理。 |
 | Debug 完整测试 | Pass | SDK 8.0.422；Contracts 118/118、TaskHost 15/15、PrivilegedBroker 3/3、Agent 170/170，共 306/306。 |
 | Release 完整测试 | Pass | SDK 8.0.422；Build 0 warnings/0 errors；完整测试同为 306/306。 |
-| 断线与检查点 | Integration Pass | copy 上传/下载和 update 上传均在真实 TLS 达到 512 KiB 后中断并重连，线上重传字节与首次实际读写量一致；默认 256 MiB 检查点实际写入与服务重建恢复通过，最终 SHA-256 一致。 |
+| 断线与检查点 | Cross-machine Pass | 自动化中 copy 上传/下载和 update 上传均在真实 TLS 达到 512 KiB 后中断重连；跨机器会话 `transfer-52ecf7e57e0f453c935daffbda93999d` 在 DataRoot DB 写入 256 MiB 检查点后强制终止 Agent PID，15 秒后以同一 session 自动续传 1 GiB 完成。`bytes=1,073,741,824`、`wireBytes=1,132,462,080`、`retransmittedBytes=58,720,256`，三方 SHA-256 一致；远端路径/staging/触发器/计划任务和本机临时根均已清零。 |
 | detached 日志/超时 | Pass / Local | stdout/stderr 持久化、成功退出码边界和 result 缺失超时均有真实 PowerShell/文件系统测试；尚未做对端故障注入。 |
 | Lint | 未配置 | 项目没有独立 lint 命令；不把编译成功表述为 Lint 0 errors。 |
 | 测试覆盖率 | 未配置 | 当前没有覆盖率配置或报告。 |
@@ -59,11 +59,11 @@ WinAgentController 已具备局域网发现、TLS 指纹固定、单控制端配
 
 ## 当前缺口
 
-当前没有执行中的目标。
+当前没有执行中的目标；跨机器 1 GiB 检查点后断线续传已完成。
 
-1. **排队：**跨机器 1 GiB copy 在 256 MiB 后中断续传，核对重传字节和三方 SHA-256。
-2. **排队：**隔离目标验证 detached 失败、result 缺失超时和安装回滚。
-3. **排队：**建立 Windows CI、覆盖率和发布制品哈希/许可清单。
+1. **排队：**隔离目标验证 detached 失败、result 缺失超时和安装回滚。
+2. **排队：**建立 Windows CI、覆盖率和发布制品哈希/许可清单。
+3. **排队：**覆盖卸载数据保留、服务账户切换和连续多次断线压力回归。
 
 其余覆盖率、Windows CI、兼容性、压力、服务账户和卸载边界统一归入 `docs/审计.md` 的技术债，不再列为当前目标。
 
