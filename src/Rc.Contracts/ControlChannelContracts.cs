@@ -16,7 +16,18 @@ public sealed record ControlHelloResponse(
     int ProtocolVersion,
     string DeviceId,
     string CertificateSha256Fingerprint,
-    bool HasPairedController);
+    bool HasPairedController)
+{
+    public IReadOnlyList<string> Capabilities { get; init; } = [];
+
+    public int? MaximumBinaryTransferChunkBytes { get; init; }
+}
+
+public static class ControlCapabilities
+{
+    public const string BinaryTransferV1 = "binary-transfer-v1";
+    public const string StreamingIntegrityV2 = "streaming-integrity-v2";
+}
 
 public static class ControlMessageKinds
 {
@@ -45,6 +56,8 @@ public const string FileManifest = "file_manifest";
     public const string TransferStart = "transfer_start";
     public const string TransferWriteChunk = "transfer_write_chunk";
     public const string TransferReadChunk = "transfer_read_chunk";
+    public const string TransferWriteBinary = "transfer_write_binary";
+    public const string TransferReadBinary = "transfer_read_binary";
     public const string TransferComplete = "transfer_complete";
     public const string TransferStatus = "transfer_status";
     public const string UiStatus = "ui_status";
@@ -241,6 +254,8 @@ public sealed record ControlFileWriteRequest(int ProtocolVersion, string Control
 public sealed record ControlTransferStartRequest(int ProtocolVersion, string ControllerId, TransferStartRequest Request) { public string Kind => ControlMessageKinds.TransferStart; }
 public sealed record ControlTransferWriteChunkRequest(int ProtocolVersion, string ControllerId, TransferWriteChunkRequest Request) { public string Kind => ControlMessageKinds.TransferWriteChunk; }
 public sealed record ControlTransferReadChunkRequest(int ProtocolVersion, string ControllerId, TransferReadChunkRequest Request) { public string Kind => ControlMessageKinds.TransferReadChunk; }
+public sealed record ControlTransferWriteBinaryRequest(int ProtocolVersion, string ControllerId, TransferBinaryWriteRequest Request) { public string Kind => ControlMessageKinds.TransferWriteBinary; }
+public sealed record ControlTransferReadBinaryRequest(int ProtocolVersion, string ControllerId, TransferBinaryReadRequest Request) { public string Kind => ControlMessageKinds.TransferReadBinary; }
 public sealed record ControlTransferCompleteRequest(int ProtocolVersion, string ControllerId, TransferCompleteRequest Request) { public string Kind => ControlMessageKinds.TransferComplete; }
 public sealed record ControlTransferStatusRequest(int ProtocolVersion, string ControllerId, TransferStatusRequest Request) { public string Kind => ControlMessageKinds.TransferStatus; }
 public sealed record ControlUpdateStartRequest(int ProtocolVersion, string ControllerId, UpdateStartRequest Request, byte[] Signature) { public string Kind => ControlMessageKinds.UpdateStart; }

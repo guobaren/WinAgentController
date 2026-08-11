@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Rc.Agent.Configuration;
 using Rc.Agent.Jobs;
@@ -9,6 +10,8 @@ namespace Rc.Agent.Updates;
 
 public interface IAgentUpdateApplier
 {
+    bool UsesDetachedCompletion => false;
+
     Task<string> ApplyAsync(string packagePath, CancellationToken cancellationToken = default);
 }
 
@@ -18,6 +21,7 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
     [
         "Install-RemoteController.ps1",
         "Update-RemoteController.ps1",
+        "Invoke-RemoteControllerDetachedUpdate.ps1",
         "Rc.Agent.exe",
         "Rc.PrivilegedBroker.exe",
         "Rc.TaskHost.exe",
@@ -158,6 +162,10 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
                     InstallationJobId = jobId,
                     UpdatedAtUtc = DateTimeOffset.UtcNow,
                 };
+                if (applier.UsesDetachedCompletion)
+                {
+                    await SignalDetachedUpdaterAsync(GetDetachedModePath(request.UpdateId), cancellationToken).ConfigureAwait(false);
+                }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -165,6 +173,10 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
             }
 
             await WriteAsync(session, cancellationToken).ConfigureAwait(false);
+            if (session.State == UpdateState.Applying)
+            {
+                await SignalDetachedUpdaterAsync(GetDetachedReadyPath(request.UpdateId), cancellationToken).ConfigureAwait(false);
+            }
             return ToResponse(session);
         }
         finally
@@ -181,21 +193,56 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
             var session = await ReadAsync(GetSessionPath(request.UpdateId), cancellationToken).ConfigureAwait(false);
             if (session.State == UpdateState.Applying && session.InstallationJobId is { } jobId)
             {
-                var job = await stateStore.GetJobSnapshotAsync(jobId, cancellationToken).ConfigureAwait(false);
-                if (job is { State: JobState.Exited, ExitCode: 0 })
+                var detachedResult = await ReadDetachedResultAsync(GetDetachedResultPath(request.UpdateId), cancellationToken).ConfigureAwait(false);
+                var usesDetachedCompletion = File.Exists(GetDetachedModePath(request.UpdateId));
+                if (detachedResult is { Succeeded: true, ExitCode: 0 })
                 {
                     session = session with { State = UpdateState.Succeeded, UpdatedAtUtc = DateTimeOffset.UtcNow };
                     await WriteAsync(session, cancellationToken).ConfigureAwait(false);
                 }
-                else if (job is { State: JobState.Exited } or { State: JobState.FailedToStart } or { State: JobState.Cancelled } or { State: JobState.InterruptedByReboot } or { State: JobState.HostCrashed })
+                else if (detachedResult is not null)
                 {
                     session = session with
                     {
                         State = UpdateState.Failed,
-                        FailureMessage = job.Error?.Message ?? $"The update installation task ended in state {job.State} with exit code {job.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a"}.",
+                        FailureMessage = detachedResult.FailureMessage ?? $"The detached update process exited with code {detachedResult.ExitCode}.",
                         UpdatedAtUtc = DateTimeOffset.UtcNow,
                     };
                     await WriteAsync(session, cancellationToken).ConfigureAwait(false);
+                }
+                else if (usesDetachedCompletion)
+                {
+                    var job = await stateStore.GetJobSnapshotAsync(jobId, cancellationToken).ConfigureAwait(false);
+                    if (!File.Exists(GetDetachedStartedPath(request.UpdateId)) &&
+                        job is { State: JobState.Exited, ExitCode: not 0 } or { State: JobState.FailedToStart } or { State: JobState.Cancelled } or { State: JobState.InterruptedByReboot } or { State: JobState.HostCrashed })
+                    {
+                        session = session with
+                        {
+                            State = UpdateState.Failed,
+                            FailureMessage = job.Error?.Message ?? $"The detached update bootstrap ended in state {job.State} with exit code {job.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a"}.",
+                            UpdatedAtUtc = DateTimeOffset.UtcNow,
+                        };
+                        await WriteAsync(session, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    var job = await stateStore.GetJobSnapshotAsync(jobId, cancellationToken).ConfigureAwait(false);
+                    if (job is { State: JobState.Exited, ExitCode: 0 })
+                    {
+                        session = session with { State = UpdateState.Succeeded, UpdatedAtUtc = DateTimeOffset.UtcNow };
+                        await WriteAsync(session, cancellationToken).ConfigureAwait(false);
+                    }
+                    else if (job is { State: JobState.Exited } or { State: JobState.FailedToStart } or { State: JobState.Cancelled } or { State: JobState.InterruptedByReboot } or { State: JobState.HostCrashed })
+                    {
+                        session = session with
+                        {
+                            State = UpdateState.Failed,
+                            FailureMessage = job.Error?.Message ?? $"The update installation task ended in state {job.State} with exit code {job.ExitCode?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "n/a"}.",
+                            UpdatedAtUtc = DateTimeOffset.UtcNow,
+                        };
+                        await WriteAsync(session, cancellationToken).ConfigureAwait(false);
+                    }
                 }
             }
             return ToResponse(session);
@@ -246,6 +293,14 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
     private string GetSessionPath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-state.json");
 
     private string GetPayloadDirectory(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "payload");
+
+    private string GetDetachedResultPath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-result.json");
+
+    private string GetDetachedReadyPath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-ready");
+
+    private string GetDetachedStartedPath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-started");
+
+    private string GetDetachedModePath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-detached");
 
     private string GetSessionDirectory(Guid updateId) => Path.Combine(updatesRoot, updateId.ToString("N"));
 
@@ -304,6 +359,21 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
             ?? throw new InvalidDataException("The persisted update session is invalid.");
     }
 
+    private static async Task<DetachedUpdateResult?> ReadDetachedResultAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path)) return null;
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 16 * 1024, useAsync: true);
+        return await JsonSerializer.DeserializeAsync<DetachedUpdateResult>(stream, ContractJson.Options, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException("The detached update result is invalid.");
+    }
+
+    private static async Task SignalDetachedUpdaterAsync(string path, CancellationToken cancellationToken)
+    {
+        var temporaryPath = path + ".tmp";
+        await File.WriteAllTextAsync(temporaryPath, DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture), cancellationToken).ConfigureAwait(false);
+        File.Move(temporaryPath, path, overwrite: true);
+    }
+
     private async Task WriteAsync(PersistedUpdateSession session, CancellationToken cancellationToken)
     {
         var path = GetSessionPath(session.UpdateId);
@@ -328,6 +398,8 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
         string? InstallationJobId,
         string? FailureMessage,
         DateTimeOffset UpdatedAtUtc);
+
+    private sealed record DetachedUpdateResult(bool Succeeded, int ExitCode, string? FailureMessage);
 }
 
 internal sealed class TaskRegistryUpdateApplier : IAgentUpdateApplier
@@ -345,6 +417,8 @@ internal sealed class TaskRegistryUpdateApplier : IAgentUpdateApplier
         this.tcpPort = tcpPort;
     }
 
+    public bool UsesDetachedCompletion => true;
+
     public async Task<string> ApplyAsync(string packagePath, CancellationToken cancellationToken = default)
     {
         var updater = Path.Combine(packagePath, "Update-RemoteController.ps1");
@@ -352,12 +426,71 @@ internal sealed class TaskRegistryUpdateApplier : IAgentUpdateApplier
         {
             throw new FileNotFoundException("The staged update package has no update script.", updater);
         }
-        var command = $"& {QuotePowerShell(updater)} -SourcePath {QuotePowerShell(packagePath)} -InstallPath {QuotePowerShell(installPath)} -DataRoot {QuotePowerShell(dataRoot)} -TcpPort {tcpPort}";
+        var detachedRunner = Path.Combine(packagePath, "Invoke-RemoteControllerDetachedUpdate.ps1");
+        if (!File.Exists(detachedRunner))
+        {
+            throw new FileNotFoundException("The staged update package has no detached update runner.", detachedRunner);
+        }
+        var command = BuildUpdaterCommand(updater, packagePath, installPath, dataRoot, tcpPort);
         var status = await taskRegistry.StartAsync(
             ExecRequest.ForShellWithIdentity(ShellKind.PowerShell, command, ExecutionIdentity.ElevatedBroker, packagePath),
             cancellationToken).ConfigureAwait(false);
         return status.Job.JobId;
     }
 
+    internal static string BuildUpdaterCommand(string updater, string packagePath, string installPath, string dataRoot, int tcpPort)
+    {
+        var sessionDirectory = Directory.GetParent(packagePath)?.FullName
+            ?? throw new ArgumentException("The staged package must be inside an update session directory.", nameof(packagePath));
+        installPath = Path.TrimEndingDirectorySeparator(installPath);
+        dataRoot = Path.TrimEndingDirectorySeparator(dataRoot);
+        var runner = Path.Combine(packagePath, "Invoke-RemoteControllerDetachedUpdate.ps1");
+        var readyPath = Path.Combine(sessionDirectory, "update-ready");
+        var resultPath = Path.Combine(sessionDirectory, "update-result.json");
+        var startedPath = Path.Combine(sessionDirectory, "update-started");
+        var taskSuffix = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sessionDirectory)))[..16];
+        var taskName = $"RemoteControllerUpdate-{taskSuffix}";
+        var runnerArguments = string.Join(' ',
+            "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", QuoteCommandLine(runner),
+            "-UpdateScript", QuoteCommandLine(updater), "-SourcePath", QuoteCommandLine(packagePath),
+            "-InstallPath", QuoteCommandLine(installPath), "-DataRoot", QuoteCommandLine(dataRoot),
+            "-TcpPort", tcpPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "-ReadyPath", QuoteCommandLine(readyPath), "-StartedPath", QuoteCommandLine(startedPath),
+            "-ResultPath", QuoteCommandLine(resultPath), "-TaskName", QuoteCommandLine(taskName));
+
+        return string.Join("; ",
+            "$ErrorActionPreference='Stop'",
+            $"$taskName={QuotePowerShell(taskName)}",
+            $"$action=New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe') -Argument {QuotePowerShell(runnerArguments)}",
+            "$principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest",
+            "$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 1) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries",
+            "Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue",
+            "Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null",
+            "Start-ScheduledTask -TaskName $taskName");
+    }
+
     private static string QuotePowerShell(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
+
+    private static string QuoteCommandLine(string value)
+    {
+        var builder = new StringBuilder(value.Length + 2).Append('"');
+        var backslashCount = 0;
+        foreach (var character in value)
+        {
+            if (character == '\\')
+            {
+                backslashCount++;
+                continue;
+            }
+            if (character == '"')
+            {
+                builder.Append('\\', checked(backslashCount * 2 + 1)).Append('"');
+                backslashCount = 0;
+                continue;
+            }
+            builder.Append('\\', backslashCount).Append(character);
+            backslashCount = 0;
+        }
+        return builder.Append('\\', checked(backslashCount * 2)).Append('"').ToString();
+    }
 }

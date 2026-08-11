@@ -23,11 +23,21 @@ Operate WinAgentController from source checkout through target deployment and au
 1. Operate only authorized Windows nodes on a trusted LAN.
 2. Verify the target TLS SHA-256 fingerprint through a trusted out-of-band channel before probing or pairing. Do not trust UDP discovery alone.
 3. Keep one-time pairing codes, controller private keys, and Agent private keys out of chat, source control, and ordinary logs.
-4. Preserve the installed identity during routine refreshes. The one-click config defaults `RegenerateIdentity` to `true`; change it to `false` unless the user explicitly intends to remove the existing pairing, generate a new certificate, and pair again.
+4. Preserve the installed identity during routine refreshes. The one-click config and setup fallback default `RegenerateIdentity` to `false`; set it to `true` only when the user explicitly intends to remove the existing pairing, generate a new certificate, and pair again.
 5. Use `--elevated` only when the requested remote command genuinely requires administrator rights.
 6. Keep `RC_AGENT_FILE_ROOT` narrow and use paths relative to that root for remote file operations.
 7. Confirm before uninstalling, regenerating identity, clearing pairing, closing windows, cancelling jobs, or replacing remote files.
 8. Do not claim a test or deployment scenario passes without current evidence. Read `docs/CURRENT_PROGRESS.md` and record unresolved validation failures there when requested.
+9. For `copy` performance work, distinguish legacy JSON/Base64 chunks from negotiated binary streaming. Compare external process time on the same dataset, use fresh destinations, and require post-transfer SHA-256 equality; a successful exit code alone is insufficient.
+
+## Treat updates as a detached lifecycle
+
+1. Build and upload the complete package, including `Invoke-RemoteControllerDetachedUpdate.ps1`; do not assemble a partial release directory.
+2. The Agent must persist `Applying` before it writes `update-ready`. The elevated Broker job only registers and starts a `SYSTEM`/highest scheduled task.
+3. The detached runner writes `update-started`, stops UI/Agent/Broker, runs the rollback-protected installer, and atomically writes `update-result.json` before removing its scheduled task.
+4. After the Agent restarts, treat the detached result as the update outcome. An `InterruptedByReboot` state on the bootstrap Broker job is not the final result once the detached runner has started.
+5. A `Succeeded` update still requires a pinned-fingerprint probe, a harmless authenticated command, service/UI registration checks, and relevant UI acceptance tests.
+6. An Agent installed before detached-update support needs one trusted local or recovery-channel refresh before it can perform the new standard update lifecycle.
 
 ## Work from repository truth
 

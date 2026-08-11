@@ -140,6 +140,33 @@ public sealed class FileTransferServiceTests
     }
 
     [Fact]
+    public async Task StreamingIntegrityUploadDoesNotRequirePrecomputedFileOrChunkHashes()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(Path.Combine(directory.Path, "state"));
+        await store.InitializeAsync();
+        var data = Encoding.UTF8.GetBytes("streamed-without-a-pre-scan");
+        var manifest = new FileManifest("local", [
+            new FileManifestEntry(string.Empty, data.Length, DateTimeOffset.UtcNow, null, FileEntryKind.File),
+        ]);
+        using var service = CreateService(store, directory.Path, quota: 1024, maximumChunk: data.Length);
+        var session = (await service.StartTransferAsync(new TransferStartRequest(
+            TransferDirection.Upload, "local", "streamed.bin", manifest, data.Length, StreamingIntegrity: true))).Session;
+        TransferBinaryReadyResponse? ready = null;
+
+        var written = await service.WriteBinaryChunkAsync(
+            new TransferBinaryWriteRequest(session.SessionId, string.Empty, 0, data.Length, null),
+            new MemoryStream(data, writable: false),
+            response => { ready = response; return Task.CompletedTask; });
+        var completed = await service.CompleteAsync(new TransferCompleteRequest(session.SessionId));
+
+        Assert.Equal(data.Length, ready?.Length);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(data)), written.Receipt.Sha256);
+        Assert.Equal(TransferSessionState.Completed, completed.Session.State);
+        Assert.Equal(data, await File.ReadAllBytesAsync(Path.Combine(directory.Path, "streamed.bin")));
+    }
+
+    [Fact]
     public async Task ExpiredSessionCannotResumeAndRemovesPartialData()
     {
         using var directory = new TemporaryDirectory();
@@ -177,11 +204,38 @@ public sealed class FileTransferServiceTests
         var manifest = new FileManifest("local", [new FileManifestEntry(string.Empty, 1, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData([1]))) ]);
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => service.StartTransferAsync(new TransferStartRequest(TransferDirection.Upload, "local", "dest.bin", manifest, 5)));
     }
-    private static FileTransferService CreateService(AgentStateStore store, string root, long quota = 1024, int atomicWriteLimit = 1024, TimeSpan? lifetime = null, TimeProvider? timeProvider = null) => new(store, new AgentOptions
+
+    [Fact]
+    public async Task DefaultLimitsAllowOneGiBTransferWithSixtyFourMiBChunks()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(Path.Combine(directory.Path, "state"));
+        await store.InitializeAsync();
+        using var service = new FileTransferService(store, new AgentOptions
+        {
+            FileRoot = directory.Path,
+        });
+        var oneGiB = 1024L * 1024 * 1024;
+        var manifest = new FileManifest("local", [
+            new FileManifestEntry(string.Empty, oneGiB, DateTimeOffset.UtcNow, new string('A', 64)),
+        ]);
+
+        var started = await service.StartTransferAsync(new TransferStartRequest(
+            TransferDirection.Upload,
+            "local",
+            "large.bin",
+            manifest,
+            64 * 1024 * 1024));
+
+        Assert.Equal(oneGiB, started.Session.Manifest.Entries.Single().Length);
+        Assert.Equal(64 * 1024 * 1024, started.Session.ChunkSize);
+    }
+
+    private static FileTransferService CreateService(AgentStateStore store, string root, long quota = 1024, int atomicWriteLimit = 1024, TimeSpan? lifetime = null, TimeProvider? timeProvider = null, int maximumChunk = 4) => new(store, new AgentOptions
     {
         FileRoot = root,
         TransferQuotaBytes = quota,
-        MaximumTransferChunkBytes = 4,
+        MaximumTransferChunkBytes = maximumChunk,
         MaximumAtomicWriteBytes = atomicWriteLimit,
         TransferSessionLifetime = lifetime ?? TimeSpan.FromHours(1),
     }, timeProvider);

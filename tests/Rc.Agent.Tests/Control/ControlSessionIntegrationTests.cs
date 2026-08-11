@@ -107,8 +107,8 @@ public sealed class ControlSessionIntegrationTests
         var options = new AgentOptions
         {
             FileRoot = fileRoot,
-            TransferQuotaBytes = 1024,
-            MaximumTransferChunkBytes = 4,
+            TransferQuotaBytes = 8 * 1024 * 1024,
+            MaximumTransferChunkBytes = 4 * 1024 * 1024,
             MaximumAtomicWriteBytes = 16,
             TransferSessionLifetime = TimeSpan.FromHours(1),
         };
@@ -151,27 +151,60 @@ public sealed class ControlSessionIntegrationTests
             Assert.Equal(5, written.Entry.Length);
             Assert.Equal("ell", Encoding.UTF8.GetString(read.Chunk.Data));
 
-            var data = Encoding.UTF8.GetBytes("abcdefgh");
+            var data = new byte[(4 * 1024 * 1024) + 8];
+            RandomNumberGenerator.Fill(data);
             var manifest = new FileManifest("local", [new FileManifestEntry(string.Empty, data.Length, DateTimeOffset.UtcNow, Convert.ToHexString(SHA256.HashData(data)))]);
             var started = await SendAsync<TransferStartResponse>(writer, reader,
-                new ControlTransferStartRequest(1, controllerId, new TransferStartRequest(TransferDirection.Upload, "local", "uploaded.bin", manifest, 4)));
-            await SendAsync<TransferWriteChunkResponse>(writer, reader,
-                new ControlTransferWriteChunkRequest(1, controllerId, new TransferWriteChunkRequest(
-                    new FileChunk(started.Session.SessionId, string.Empty, 0, data[..4], false),
-                    Convert.ToHexString(SHA256.HashData(data[..4])))));
+                new ControlTransferStartRequest(1, controllerId, new TransferStartRequest(TransferDirection.Upload, "local", "uploaded.bin", manifest, 4 * 1024 * 1024)));
+            var firstChunk = data[..(4 * 1024 * 1024)];
+            var ready = await SendAsync<TransferBinaryReadyResponse>(writer, reader,
+                new ControlTransferWriteBinaryRequest(1, controllerId, new TransferBinaryWriteRequest(
+                    started.Session.SessionId,
+                    string.Empty,
+                    0,
+                    firstChunk.Length,
+                    Convert.ToHexString(SHA256.HashData(firstChunk)))));
+            Assert.Equal(firstChunk.Length, ready.Length);
+            Assert.False(ready.AlreadyCompleted);
+            await tls.WriteAsync(firstChunk);
+            await tls.FlushAsync();
+            var binaryWritten = await ReadAsync<TransferBinaryWriteResponse>(reader);
+            Assert.Equal(firstChunk.Length, binaryWritten.Receipt.Length);
 
             var persisted = await SendAsync<TransferStatusResponse>(writer, reader,
                 new ControlTransferStatusRequest(1, controllerId, new TransferStatusRequest(started.Session.SessionId)));
             Assert.Single(persisted.Session.CompletedChunks);
             await SendAsync<TransferWriteChunkResponse>(writer, reader,
                 new ControlTransferWriteChunkRequest(1, controllerId, new TransferWriteChunkRequest(
-                    new FileChunk(started.Session.SessionId, string.Empty, 4, data[4..], true),
-                    Convert.ToHexString(SHA256.HashData(data[4..])))));
+                    new FileChunk(started.Session.SessionId, string.Empty, 4 * 1024 * 1024, data[(4 * 1024 * 1024)..], true),
+                    Convert.ToHexString(SHA256.HashData(data[(4 * 1024 * 1024)..])))));
             var completed = await SendAsync<TransferCompleteResponse>(writer, reader,
                 new ControlTransferCompleteRequest(1, controllerId, new TransferCompleteRequest(started.Session.SessionId)));
 
             Assert.Equal(TransferSessionState.Completed, completed.Session.State);
             Assert.Equal(data, await File.ReadAllBytesAsync(Path.Combine(fileRoot, "uploaded.bin")));
+
+            var download = await SendAsync<TransferStartResponse>(writer, reader,
+                new ControlTransferStartRequest(1, controllerId, new TransferStartRequest(
+                    TransferDirection.Download,
+                    "uploaded.bin",
+                    "local",
+                    new FileManifest("unused", []),
+                    4 * 1024 * 1024)));
+            var downloadReady = await SendAsync<TransferBinaryReadyResponse>(writer, reader,
+                new ControlTransferReadBinaryRequest(1, controllerId, new TransferBinaryReadRequest(
+                    download.Session.SessionId,
+                    string.Empty,
+                    0,
+                    4 * 1024 * 1024)));
+            Assert.Equal(4 * 1024 * 1024, downloadReady.Length);
+            await tls.WriteAsync(new byte[] { 1 });
+            await tls.FlushAsync();
+            var downloaded = new byte[downloadReady.Length];
+            await tls.ReadExactlyAsync(downloaded);
+            var binaryRead = await ReadAsync<TransferBinaryReadResponse>(reader);
+            Assert.Equal(Convert.ToHexString(SHA256.HashData(downloaded)), binaryRead.ChunkSha256);
+            Assert.Equal(firstChunk, downloaded);
         }
         finally
         {
@@ -234,6 +267,11 @@ public sealed class ControlSessionIntegrationTests
     private static async Task<T> SendAsync<T>(StreamWriter writer, StreamReader reader, object request)
     {
         await writer.WriteLineAsync(JsonSerializer.Serialize(request, ContractJson.Options));
+        return await ReadAsync<T>(reader);
+    }
+
+    private static async Task<T> ReadAsync<T>(StreamReader reader)
+    {
         var line = await reader.ReadLineAsync();
         var envelope = JsonSerializer.Deserialize<ResultEnvelope<T>>(line!, ContractJson.Options);
         Assert.NotNull(envelope);

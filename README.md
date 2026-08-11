@@ -33,7 +33,7 @@
 | 文件/目录传输 | `copy` 支持上传、下载、会话状态查询、分块哈希校验以及基于会话 ID 的续传。 |
 | 显式提权 | `exec --elevated` 和 `job start --elevated` 可交给独立的本地 Privileged Broker。Broker 只监听本地命名管道，不开放网络端口。 |
 | Windows 服务安装 | 安装脚本可部署 `RemoteControllerAgent`（LocalService）和 `RemoteControllerBroker`（LocalSystem）服务，创建受限数据目录并可添加 Private/Domain 入站防火墙规则。 |
-| 一键更新 | `rcctl update apply` 可上传完整发布包、校验清单与分块哈希并触发受控更新；更新脚本停止服务、保留旧安装目录，并在安装脚本执行失败时回滚并重启旧服务。 |
+| 一键更新 | `rcctl update apply` 可上传完整发布包、校验清单与分块哈希并触发受控更新；独立 SYSTEM 更新任务可在 Agent/Broker 停止期间继续安装，失败时回滚并重启旧服务。 |
 | 桌面 UI 自动化 | 通过登录用户会话中的 `Rc.UiAgent` 支持显示器/窗口枚举、截图、窗口动作、鼠标、键盘、快捷键、文本、剪贴板和 Windows UI Automation 元素树/元素动作。 |
 | 浏览器控制 | `rcctl ui browser` 支持 Edge/Chrome 启动、导航和受控 Chromium CDP DOM/可访问性树读取；浏览器操作要求目标登录会话和显式窗口句柄。 |
 
@@ -226,7 +226,7 @@ Setup-RemoteControllerAgent.cmd
 
 ## 一键更新
 
-控制端使用**完整发布包目录**更新已配对的被控机。包中必须包含 Agent、Broker、TaskHost、UI Agent、两个验收程序、CLI、`Install-RemoteController.ps1` 和 `Update-RemoteController.ps1`；上节的发布脚本会生成此目录。建议先在隔离环境验证待发布包，再执行生产升级。
+控制端使用**完整发布包目录**更新已配对的被控机。包中必须包含 Agent、Broker、TaskHost、UI Agent、两个验收程序、CLI、`Install-RemoteController.ps1`、`Update-RemoteController.ps1` 和 `Invoke-RemoteControllerDetachedUpdate.ps1`；上节的发布脚本会生成此目录。建议先在隔离环境验证待发布包，再执行生产升级。
 
 ```powershell
 # --wait 会在 Agent 服务重启期间自动重连并等待最终状态。
@@ -240,7 +240,9 @@ Setup-RemoteControllerAgent.cmd
 
 控制端会从包内 `Rc.Agent.exe` 读取版本（无法读取时必须显式传入 `--version`），构建 SHA-256 清单后以默认 256 KiB 分块上传；可用 `--chunk-size 1-262144` 调整。被控端只接受已配对控制端的签名请求，拒绝路径越界、篡改块、缺失必需文件、超过 1 GiB 的包及版本降级。更新会话和任务 ID 存放在受保护的数据根中，便于重连后查询。
 
-更新脚本会停止 UI Agent、Agent 和 Broker，将旧安装目录移至同一卷的临时备份，再运行安装脚本。安装脚本抛出错误时会删除不完整的新目录、恢复旧目录并尝试启动旧服务；当前成功判定依据更新任务退出码，不包含更新后的服务健康探针或业务验收。`C:\ProgramData\RemoteController` 中的证书、配对、任务和审计数据不会被删除。真实双节点更新、断线续传和失败回滚的发布环境验收仍在进行中，状态以 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md) 为准。
+Agent 先持久化 `Applying` 状态，再启动独立的 SYSTEM 计划任务。`Invoke-RemoteControllerDetachedUpdate.ps1` 在 Agent/Broker 停止期间继续执行安装，并以原子结果文件供 Agent 重启后判定最终状态。更新脚本会停止 UI Agent、Agent 和 Broker，将旧安装目录移至同一卷的临时备份，再运行安装脚本；安装失败时会删除不完整的新目录、恢复旧目录并尝试启动旧服务。`Succeeded` 表示独立安装脚本退出码为 0，但仍不替代更新后的 probe、认证命令和 UI 健康验收。`C:\ProgramData\RemoteController` 中的证书、配对、任务和审计数据不会被删除。真实双节点更新、断线续传和失败回滚状态以 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md) 为准。
+
+修复前版本的 Agent 尚不能创建独立更新任务，必须先通过目标本机安装或已授权的独立恢复通道刷新一次。完成这次引导后，后续即可使用上述标准 `update apply --wait` 流程。无论在控制机还是被控机刷新安装，都应保持 `RegenerateIdentity=false`，并在完成后重新核对固定指纹、配对状态、认证命令和 UI Agent。
 
 ## 首次连接与日常使用
 
@@ -339,13 +341,22 @@ Agent 端文件服务限制在 `RC_AGENT_FILE_ROOT`（默认由运行账户的�
 & $rcctl copy download 192.168.1.50:43001 'incoming\build-output' --fingerprint <SHA256> --to .\restored
 ```
 
-传输开始时 CLI 会在标准错误写出 `transferSession=<id>`。中断后可用会话 ID 查询或续传：
+新版 Agent 会协商二进制 TLS 流和 64 MiB 分块；旧 Agent 自动回退到兼容的 4 MiB JSON 分块。二进制链路在读写数据的同时由两端计算并核对逐块 SHA-256，不再为清单、块发送和完成确认重复扫描整份文件。活动会话常驻内存并每 256 MiB 持久化一次断点；异常中断最多重传最近一个检查点之后的数据。传输开始时 CLI 会在标准错误写出 `transferSession=<id>`，完成时写出本次实际传输的 `bytes`、`elapsed` 和 `MiB/s`；stdout 仍保持 JSON envelope，便于脚本处理。中断后可用会话 ID 查询或续传：
 
 ```powershell
 & $rcctl copy status 192.168.1.50:43001 <transferSessionId> --fingerprint <SHA256>
 & $rcctl copy upload 192.168.1.50:43001 .\build-output --fingerprint <SHA256> `
   --to 'incoming\build-output' --session <transferSessionId>
 ```
+
+仓库提供真实链路基准脚本，会生成并双向传输 100 个 1 KiB–5 MiB 文件和一个 1 GiB 文件，再逐文件核对 SHA-256：
+
+```powershell
+.\scripts\Test-RemoteControllerFileTransfer.ps1 `
+  -Target 192.168.1.50:43001 -Fingerprint <SHA256>
+```
+
+在 1 GbE 局域网实测中，优化后的 `copy` 两轮结果为：小文件上传 52.57–52.71 MiB/s、下载 69.67–74.71 MiB/s，1 GiB 上传 97.72–99.52 MiB/s、下载 106.06–107.65 MiB/s。相同数据集的 OpenSSH SFTP/SCP 基线为 54.26/75.43 和 102.13/107.27 MiB/s；所有结果均在计时后再次核对 SHA-256。
 
 ### 桌面 UI 与浏览器控制
 
@@ -436,8 +447,8 @@ CLI 无参数或未知命令会输出总览用法；成功的非 `--text` 命令
 | `RC_LOG_QUOTA_BYTES` | `200 MiB` | 日志配额。 |
 | `RC_TASK_OUTPUT_LIMIT_BYTES` | `200 MiB` | 任务输出配额。 |
 | `RC_AUDIT_QUOTA_BYTES` | `16 MiB` | 审计记录配额。 |
-| `RC_TRANSFER_QUOTA_BYTES` | `200 MiB` | 传输数据配额。 |
-| `RC_TRANSFER_MAX_CHUNK_BYTES` | `1 MiB` | 传输分块最大值。 |
+| `RC_TRANSFER_QUOTA_BYTES` | `2 GiB` | 单次传输清单的文件总字节配额。 |
+| `RC_TRANSFER_MAX_CHUNK_BYTES` | `64 MiB` | 新二进制 `copy` 的最大/默认分块；旧 Agent 兼容路径默认 4 MiB。 |
 | `RC_UPDATE_MAX_PACKAGE_BYTES` | `1 GiB` | 一次一键更新允许接收的最大包大小。 |
 | `RC_UPDATE_MAX_CHUNK_BYTES` | `256 KiB` | 一键更新分块的最大值；控制端 `--chunk-size` 不得超过它。 |
 | `RC_FILE_MAX_WRITE_BYTES` | `16 MiB` | `fs write` 单次原子写入最大值。 |

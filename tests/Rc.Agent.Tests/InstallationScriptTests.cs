@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Text.Json;
 using Rc.Agent.Tests.Persistence;
 using Xunit;
 
@@ -44,6 +45,36 @@ public sealed class InstallationScriptTests
 
         Assert.False(Directory.Exists(install));
         Assert.False(Directory.Exists(data));
+    }
+
+    [Fact]
+    public async Task DetachedUpdateRunnerWaitsForReadyAndWritesDurableSuccessResult()
+    {
+        using var directory = new TemporaryDirectory();
+        var source = Path.Combine(directory.Path, "payload");
+        Directory.CreateDirectory(source);
+        var updateScript = Path.Combine(source, "Fake-Update.ps1");
+        await File.WriteAllTextAsync(updateScript, """
+            param([string]$SourcePath, [string]$InstallPath, [string]$DataRoot, [int]$TcpPort)
+            Set-Content -LiteralPath (Join-Path $SourcePath 'update-invoked') -Value "$InstallPath|$DataRoot|$TcpPort" -Encoding UTF8
+            exit 0
+            """);
+        var readyPath = Path.Combine(directory.Path, "update-ready");
+        var startedPath = Path.Combine(directory.Path, "update-started");
+        var resultPath = Path.Combine(directory.Path, "update-result.json");
+        await File.WriteAllTextAsync(readyPath, "ready");
+
+        await RunPowerShellAsync(Path.Combine(FindRepositoryRoot(), "scripts", "Invoke-RemoteControllerDetachedUpdate.ps1"),
+            "-UpdateScript", updateScript, "-SourcePath", source, "-InstallPath", Path.Combine(directory.Path, "install"),
+            "-DataRoot", Path.Combine(directory.Path, "data"), "-TcpPort", "43001", "-ReadyPath", readyPath,
+            "-StartedPath", startedPath, "-ResultPath", resultPath, "-TaskName", "RcDetachedUpdateTest-" + Guid.NewGuid().ToString("N"));
+
+        Assert.True(File.Exists(startedPath));
+        Assert.True(File.Exists(Path.Combine(source, "update-invoked")));
+        using var result = JsonDocument.Parse(await File.ReadAllTextAsync(resultPath));
+        Assert.True(result.RootElement.GetProperty("succeeded").GetBoolean());
+        Assert.Equal(0, result.RootElement.GetProperty("exitCode").GetInt32());
+        Assert.Equal(JsonValueKind.Null, result.RootElement.GetProperty("failureMessage").ValueKind);
     }
 
     private static string FindRepositoryRoot()

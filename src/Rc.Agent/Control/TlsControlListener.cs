@@ -25,7 +25,8 @@ namespace Rc.Agent.Control;
 /// </summary>
 public sealed class TlsControlListener : IAsyncDisposable
 {
-    private const int MaximumLineLength = 1024 * 1024;
+    private const int MaximumRequestCharacters = 8 * 1024 * 1024;
+    private const int ControlIoBufferSize = 64 * 1024;
     private const int MaximumReturnedOutputBytesPerStream = 256 * 1024;
     private static readonly TimeSpan ControlSessionLifetime = TimeSpan.FromMinutes(10);
     private readonly TcpListener listener;
@@ -141,8 +142,8 @@ public sealed class TlsControlListener : IAsyncDisposable
                 LocalTlsHandshakeDiagnosticsFile.Clear(dataRoot);
 
                 stage = "processing a TLS control request";
-                using var reader = new StreamReader(tls, new UTF8Encoding(false), false, MaximumLineLength, leaveOpen: true);
-                await using var writer = new StreamWriter(tls, new UTF8Encoding(false), MaximumLineLength, leaveOpen: true) { AutoFlush = true };
+                using var reader = new StreamReader(tls, new UTF8Encoding(false), false, ControlIoBufferSize, leaveOpen: true);
+                await using var writer = new StreamWriter(tls, new UTF8Encoding(false), ControlIoBufferSize, leaveOpen: true) { AutoFlush = true };
                 PendingControlSession? pendingSession = null;
                 AuthenticatedControlSession? authenticatedSession = null;
                 while (!cancellationToken.IsCancellationRequested)
@@ -152,7 +153,7 @@ public sealed class TlsControlListener : IAsyncDisposable
                     {
                         return;
                     }
-                    if (string.IsNullOrWhiteSpace(requestLine) || requestLine.Length > MaximumLineLength)
+                    if (string.IsNullOrWhiteSpace(requestLine) || requestLine.Length > MaximumRequestCharacters)
                     {
                         await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "A non-empty bounded control request is required.");
                         continue;
@@ -235,6 +236,12 @@ public sealed class TlsControlListener : IAsyncDisposable
                         case ControlMessageKinds.TransferComplete:
                         case ControlMessageKinds.TransferStatus:
                             await HandleFileRequestAsync(kindElement.GetString()!, document.RootElement, writer, authenticatedSession, cancellationToken);
+                            break;
+                        case ControlMessageKinds.TransferWriteBinary:
+                            await HandleBinaryWriteAsync(document.RootElement, tls, writer, authenticatedSession, cancellationToken);
+                            break;
+                        case ControlMessageKinds.TransferReadBinary:
+                            await HandleBinaryReadAsync(document.RootElement, tls, writer, authenticatedSession, cancellationToken);
                             break;
                         case ControlMessageKinds.UiStatus:
                             await HandleUiStatusAsync(document.RootElement, writer, authenticatedSession, cancellationToken);
@@ -473,7 +480,11 @@ public sealed class TlsControlListener : IAsyncDisposable
             ProtocolVersion: 1,
             identity.DeviceId,
             identity.CertificateSha256Fingerprint,
-            pairedController is not null));
+            pairedController is not null)
+        {
+            Capabilities = [ControlCapabilities.BinaryTransferV1, ControlCapabilities.StreamingIntegrityV2],
+            MaximumBinaryTransferChunkBytes = options.MaximumTransferChunkBytes,
+        });
     }
 
     private async Task<PendingControlSession?> HandleSessionStartAsync(JsonElement root, StreamWriter writer, CancellationToken cancellationToken)
@@ -1029,6 +1040,83 @@ public sealed class TlsControlListener : IAsyncDisposable
         catch (InvalidOperationException exception) { await WriteFailureAsync(writer, ErrorCode.FailedPrecondition, exception.Message); }
         catch (Exception exception) when (exception is ArgumentException or InvalidDataException or IOException)
         { await WriteFailureAsync(writer, ErrorCode.InvalidRequest, exception.Message); }
+    }
+
+    private async Task HandleBinaryWriteAsync(JsonElement root, Stream stream, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlTransferWriteBinaryRequest>(ContractJson.Options);
+        if (!await AuthorizeFileRequestAsync(ControlMessageKinds.TransferWriteBinary, request?.ProtocolVersion, request?.ControllerId, session, writer, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+        try
+        {
+            var result = await fileService.WriteBinaryChunkAsync(
+                request!.Request,
+                stream,
+                ready => WriteSuccessAsync(writer, ready),
+                cancellationToken).ConfigureAwait(false);
+            await WriteSuccessAsync(writer, result).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            var errorCode = MapFileOperationError(exception);
+            await AuditAsync("file." + ControlMessageKinds.TransferWriteBinary, request!.ControllerId, null, false, errorCode, null, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, errorCode, exception.Message).ConfigureAwait(false);
+        }
+    }
+
+    private async Task HandleBinaryReadAsync(JsonElement root, Stream stream, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
+    {
+        var request = root.Deserialize<ControlTransferReadBinaryRequest>(ContractJson.Options);
+        if (!await AuthorizeFileRequestAsync(ControlMessageKinds.TransferReadBinary, request?.ProtocolVersion, request?.ControllerId, session, writer, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+        try
+        {
+            var result = await fileService.ReadBinaryChunkAsync(
+                request!.Request,
+                stream,
+                ready => WriteSuccessAsync(writer, ready),
+                async () =>
+                {
+                    var signal = new byte[1];
+                    await stream.ReadExactlyAsync(signal, cancellationToken).ConfigureAwait(false);
+                    if (signal[0] != 1) throw new InvalidDataException("The binary download readiness signal is invalid.");
+                },
+                cancellationToken).ConfigureAwait(false);
+            await WriteSuccessAsync(writer, result).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            var errorCode = MapFileOperationError(exception);
+            await AuditAsync("file." + ControlMessageKinds.TransferReadBinary, request!.ControllerId, null, false, errorCode, null, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, errorCode, exception.Message).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<bool> AuthorizeFileRequestAsync(string operationKind, int? protocolVersion, string? controllerId, AuthenticatedControlSession? session, StreamWriter writer, CancellationToken cancellationToken)
+    {
+        if (protocolVersion != 1 || string.IsNullOrWhiteSpace(controllerId))
+        {
+            await WriteFailureAsync(writer, ErrorCode.InvalidRequest, "The file request is invalid.").ConfigureAwait(false);
+            return false;
+        }
+        if (session is null || session.ExpiresAtUtc <= DateTimeOffset.UtcNow || !string.Equals(session.ControllerId, controllerId, StringComparison.Ordinal))
+        {
+            await AuditAsync("file." + operationKind, controllerId, null, false, ErrorCode.Unauthenticated, null, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, ErrorCode.Unauthenticated, "An authenticated control session is required for file operations.").ConfigureAwait(false);
+            return false;
+        }
+        var paired = await stateStore.GetPairedControllerAsync(cancellationToken).ConfigureAwait(false);
+        if (paired is null || !string.Equals(paired.ControllerId, session.ControllerId, StringComparison.Ordinal))
+        {
+            await AuditAsync("file." + operationKind, controllerId, null, false, ErrorCode.Unauthenticated, new Dictionary<string, string> { ["reason"] = "unpaired" }, cancellationToken).ConfigureAwait(false);
+            await WriteFailureAsync(writer, ErrorCode.Unauthenticated, "The authenticated control session was revoked by a local unpair operation.").ConfigureAwait(false);
+            return false;
+        }
+        return true;
     }
 
     private async Task ExecuteFileAsync<T>(string operationKind, int? protocolVersion, string? controllerId, AuthenticatedControlSession? session, StreamWriter writer, Func<Task<T>> operation, CancellationToken cancellationToken)

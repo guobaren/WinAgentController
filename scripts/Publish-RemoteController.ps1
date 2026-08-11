@@ -27,16 +27,31 @@ $projects = @{
 New-Item -ItemType Directory -Path $output -Force | Out-Null
 foreach ($name in $projects.Keys) {
     $project = Join-Path $root $projects[$name]
-    $staging = Join-Path $output $name
-    & $dotnet publish $project --configuration $Configuration --runtime win-x64 --self-contained true `
-        -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output $staging
-    if ($LASTEXITCODE -ne 0) { throw "Publish failed for $name." }
-    $executable = Join-Path $staging "$name.exe"
-    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "Publish output for $name has no executable." }
-    Copy-Item -LiteralPath $executable -Destination (Join-Path $output "$name.exe") -Force
+    # Keep only the single-file executable in the package root. Older versions
+    # of this script left every self-contained staging directory below the
+    # package, duplicating hundreds of megabytes and potentially exceeding the
+    # Agent's one-gigabyte update manifest limit.
+    $legacyStaging = Join-Path $output $name
+    if (Test-Path -LiteralPath $legacyStaging -PathType Container) {
+        Remove-Item -LiteralPath $legacyStaging -Recurse -Force
+    }
+    $staging = Join-Path ([IO.Path]::GetTempPath()) ("RemoteController-publish-$name-" + [guid]::NewGuid().ToString('N'))
+    try {
+        & $dotnet publish $project --configuration $Configuration --runtime win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output $staging
+        if ($LASTEXITCODE -ne 0) { throw "Publish failed for $name." }
+        $executable = Join-Path $staging "$name.exe"
+        if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw "Publish output for $name has no executable." }
+        Copy-Item -LiteralPath $executable -Destination (Join-Path $output "$name.exe") -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $staging -PathType Container) {
+            Remove-Item -LiteralPath $staging -Recurse -Force
+        }
+    }
 }
 
-$packageFiles = @('Install-RemoteController.ps1', 'Update-RemoteController.ps1', 'Uninstall-RemoteController.ps1', 'Uninstall-RemoteController.cmd', 'Start-RemoteController.cmd', 'Start-RemoteControllerUiTest.cmd', 'Repair-RemoteControllerTlsIdentity.ps1', 'Test-RemoteControllerUi.ps1', 'Setup-RemoteControllerAgent.ps1', 'Setup-RemoteControllerAgent.cmd', 'RemoteController.Agent.config.json')
+$packageFiles = @('Install-RemoteController.ps1', 'Update-RemoteController.ps1', 'Invoke-RemoteControllerDetachedUpdate.ps1', 'Uninstall-RemoteController.ps1', 'Uninstall-RemoteController.cmd', 'Start-RemoteController.cmd', 'Start-RemoteControllerUiTest.cmd', 'Repair-RemoteControllerTlsIdentity.ps1', 'Test-RemoteControllerUi.ps1', 'Setup-RemoteControllerAgent.ps1', 'Setup-RemoteControllerAgent.cmd', 'RemoteController.Agent.config.json')
 foreach ($name in $projects.Keys) {
     if (-not (Test-Path -LiteralPath (Join-Path $output "$name.exe") -PathType Leaf)) { throw "Missing packaged executable: $name.exe" }
 }

@@ -41,7 +41,16 @@ If core commands work but UI commands fail, check that the target is unlocked, t
 
 ## Interpret update results
 
-An update job exit code reports whether the update script completed. It does not prove that services are healthy afterward. After success:
+For current packages, inspect the update session under `DataRoot\updates\<update-id>`:
+
+- `update-detached` selects detached completion semantics.
+- `update-ready` means `Applying` was persisted before service shutdown.
+- `update-started` means the independent SYSTEM runner began.
+- `update-result.json` is the durable final install result.
+
+Once `update-started` exists, do not treat the bootstrap Broker job's `InterruptedByReboot` as the final failure. If no result appears, inspect the scheduled task, installation backup directory, and service state through an independent trusted recovery channel. Agents installed before this lifecycle require one bootstrap refresh.
+
+An update result reports whether the detached install script completed. It does not prove that services are healthy afterward. After success:
 
 1. Probe the pinned fingerprint.
 2. Run a harmless authenticated command.

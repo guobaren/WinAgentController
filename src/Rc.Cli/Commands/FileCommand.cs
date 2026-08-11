@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -10,7 +11,9 @@ namespace Rc.Cli.Commands;
 
 public static class FileCommand
 {
-    private const int DefaultChunkSize = 256 * 1024;
+    private const int DefaultFileReadSize = 256 * 1024;
+    private const int LegacyTransferChunkSize = 4 * 1024 * 1024;
+    private const int PreferredBinaryTransferChunkSize = 64 * 1024 * 1024;
 
     public static async Task<int> RunFsAsync(string[] args, TextWriter output, TextWriter error)
     {
@@ -22,7 +25,7 @@ public static class FileCommand
             {
                 "list" => await connection.SendAsync<FileListResponse>(new ControlFileListRequest(1, connection.ControllerId, new FileListRequest(path!, options.ContainsKey("recursive")))),
                 "stat" => await connection.SendAsync<FileStatResponse>(new ControlFileStatRequest(1, connection.ControllerId, new FileStatRequest(path!))),
-                "read" => await connection.SendAsync<FileReadResponse>(new ControlFileReadRequest(1, connection.ControllerId, new FileReadRequest(path!, GetLong(options, "offset", 0), GetInt(options, "max-bytes", DefaultChunkSize)))),
+                "read" => await connection.SendAsync<FileReadResponse>(new ControlFileReadRequest(1, connection.ControllerId, new FileReadRequest(path!, GetLong(options, "offset", 0), GetInt(options, "max-bytes", DefaultFileReadSize)))),
                 "write" => await WriteAsync(connection, path!, options),
                 _ => throw new ArgumentException(UsageFs()),
             };
@@ -47,7 +50,10 @@ public static class FileCommand
                 return 0;
             }
             var destination = options.GetValueOrDefault("to") ?? throw new ArgumentException("--to is required.");
-            var chunkSize = GetInt(options, "chunk-size", DefaultChunkSize);
+            var defaultChunkSize = connection.SupportsBinaryTransfer
+                ? Math.Min(PreferredBinaryTransferChunkSize, connection.MaximumBinaryTransferChunkBytes)
+                : LegacyTransferChunkSize;
+            var chunkSize = GetInt(options, "chunk-size", defaultChunkSize);
             var sessionIdOption = options.GetValueOrDefault("session");
             TransferSessionSnapshot session;
             if (sessionIdOption is not null)
@@ -56,22 +62,29 @@ public static class FileCommand
             }
             else if (operation == "upload")
             {
-                var manifest = await BuildLocalManifestAsync(path!);
+                var manifest = await BuildLocalManifestAsync(path!, includeHashes: !connection.SupportsStreamingIntegrity);
                 session = (await connection.SendAsync<TransferStartResponse>(new ControlTransferStartRequest(1, connection.ControllerId,
-                    new TransferStartRequest(TransferDirection.Upload, Path.GetFullPath(path!), destination, manifest, chunkSize)))).Session;
+                    new TransferStartRequest(TransferDirection.Upload, Path.GetFullPath(path!), destination, manifest, chunkSize,
+                        connection.SupportsStreamingIntegrity)))).Session;
             }
             else if (operation == "download")
             {
                 session = (await connection.SendAsync<TransferStartResponse>(new ControlTransferStartRequest(1, connection.ControllerId,
-                    new TransferStartRequest(TransferDirection.Download, path!, Path.GetFullPath(destination), new FileManifest(path!, []), chunkSize)))).Session;
+                    new TransferStartRequest(TransferDirection.Download, path!, Path.GetFullPath(destination), new FileManifest(path!, []), chunkSize,
+                        connection.SupportsStreamingIntegrity)))).Session;
             }
             else throw new ArgumentException(UsageCopy());
 
             await error.WriteLineAsync($"[rcctl] transferSession={session.SessionId}");
             await error.FlushAsync();
-            if (operation == "upload") await UploadAsync(connection, session, path!);
-            else await DownloadAsync(connection, session, destination);
+            var stopwatch = Stopwatch.StartNew();
+            var transferredBytes = operation == "upload"
+                ? await UploadAsync(connection, session, path!)
+                : await DownloadAsync(connection, session, destination);
             var completed = await connection.SendAsync<TransferCompleteResponse>(new ControlTransferCompleteRequest(1, connection.ControllerId, new TransferCompleteRequest(session.SessionId)));
+            stopwatch.Stop();
+            var mebibytesPerSecond = transferredBytes / 1024d / 1024d / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001d);
+            await error.WriteLineAsync($"[rcctl] bytes={transferredBytes} elapsed={stopwatch.Elapsed.TotalSeconds:F3}s MiB/s={mebibytesPerSecond:F2}");
             await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(completed), ContractJson.Options));
             return 0;
         }
@@ -86,10 +99,12 @@ public static class FileCommand
         return await connection.SendAsync<FileWriteResponse>(new ControlFileWriteRequest(1, connection.ControllerId, new FileWriteRequest(path, data, options.ContainsKey("overwrite"))));
     }
 
-    private static async Task UploadAsync(AuthenticatedControlConnection connection, TransferSessionSnapshot session, string localRoot)
+    private static async Task<long> UploadAsync(AuthenticatedControlConnection connection, TransferSessionSnapshot session, string localRoot)
     {
         var root = Path.GetFullPath(localRoot);
-        foreach (var entry in session.Manifest.Entries.Where(e => e.Sha256 is not null))
+        var transferredBytes = 0L;
+        var useBinary = connection.SupportsBinaryTransfer;
+        foreach (var entry in session.Manifest.Entries.Where(IsFile))
         {
             var file = string.IsNullOrEmpty(entry.RelativePath) ? root : Path.Combine(root, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar));
             await using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, true);
@@ -97,20 +112,60 @@ public static class FileCommand
             {
                 var length = checked((int)Math.Min(session.ChunkSize, entry.Length - offset));
                 if (session.CompletedChunks.Any(r => r.RelativePath == entry.RelativePath && r.Offset == offset && r.Length == length)) continue;
-                var data = new byte[length]; stream.Position = offset; await stream.ReadExactlyAsync(data);
-                var chunk = new FileChunk(session.SessionId, entry.RelativePath, offset, data, offset + length >= entry.Length);
-                await connection.SendAsync<TransferWriteChunkResponse>(new ControlTransferWriteChunkRequest(1, connection.ControllerId,
-                    new TransferWriteChunkRequest(chunk, Convert.ToHexString(SHA256.HashData(data)))));
+                stream.Position = offset;
+                if (useBinary)
+                {
+                    try
+                    {
+                        if (connection.SupportsStreamingIntegrity)
+                        {
+                            await connection.SendBinaryUploadAsync(
+                                new TransferBinaryWriteRequest(session.SessionId, entry.RelativePath, offset, length, null), stream);
+                        }
+                        else
+                        {
+                            var data = new byte[length];
+                            await stream.ReadExactlyAsync(data);
+                            var hash = Convert.ToHexString(SHA256.HashData(data));
+                            await connection.SendBinaryUploadAsync(
+                                new TransferBinaryWriteRequest(session.SessionId, entry.RelativePath, offset, length, hash), data);
+                        }
+                    }
+                    catch (InvalidOperationException exception) when (IsBinaryTransferUnsupported(exception))
+                    {
+                        useBinary = false;
+                        stream.Position = offset;
+                        var data = new byte[length];
+                        await stream.ReadExactlyAsync(data);
+                        var hash = Convert.ToHexString(SHA256.HashData(data));
+                        var chunk = new FileChunk(session.SessionId, entry.RelativePath, offset, data, offset + length >= entry.Length);
+                        await connection.SendAsync<TransferWriteChunkResponse>(new ControlTransferWriteChunkRequest(1, connection.ControllerId,
+                            new TransferWriteChunkRequest(chunk, hash)));
+                    }
+                }
+                else
+                {
+                    var data = new byte[length];
+                    await stream.ReadExactlyAsync(data);
+                    var hash = Convert.ToHexString(SHA256.HashData(data));
+                    var chunk = new FileChunk(session.SessionId, entry.RelativePath, offset, data, offset + length >= entry.Length);
+                    await connection.SendAsync<TransferWriteChunkResponse>(new ControlTransferWriteChunkRequest(1, connection.ControllerId,
+                        new TransferWriteChunkRequest(chunk, hash)));
+                }
+                transferredBytes += length;
             }
         }
+        return transferredBytes;
     }
 
-    private static async Task DownloadAsync(AuthenticatedControlConnection connection, TransferSessionSnapshot session, string localDestination)
+    private static async Task<long> DownloadAsync(AuthenticatedControlConnection connection, TransferSessionSnapshot session, string localDestination)
     {
         var root = Path.GetFullPath(localDestination);
+        var transferredBytes = 0L;
+        var useBinary = connection.SupportsBinaryTransfer;
         var destinations = LocalTransferPaths.ResolveManifest(root, session.Manifest);
-        foreach (var item in destinations.Where(item => item.Entry.Sha256 is null)) Directory.CreateDirectory(item.Path);
-        foreach (var item in destinations.Where(item => item.Entry.Sha256 is not null))
+        foreach (var item in destinations.Where(item => !IsFile(item.Entry))) Directory.CreateDirectory(item.Path);
+        foreach (var item in destinations.Where(item => IsFile(item.Entry)))
         {
             var entry = item.Entry;
             var final = item.Path;
@@ -123,29 +178,50 @@ public static class FileCommand
                 stream.Position = offset;
                 while (offset < entry.Length)
                 {
-                    var response = await connection.SendAsync<TransferReadChunkResponse>(new ControlTransferReadChunkRequest(1, connection.ControllerId,
-                        new TransferReadChunkRequest(session.SessionId, entry.RelativePath, offset, checked((int)Math.Min(session.ChunkSize, entry.Length - offset)))));
-                    var hash = Convert.ToHexString(SHA256.HashData(response.Chunk.Data));
-                    if (!string.Equals(hash, response.ChunkSha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Downloaded chunk hash mismatch.");
-                    await stream.WriteAsync(response.Chunk.Data); offset += response.Chunk.Data.Length;
+                    var length = checked((int)Math.Min(session.ChunkSize, entry.Length - offset));
+                    if (useBinary)
+                    {
+                        try
+                        {
+                            var response = await connection.SendBinaryDownloadAsync(
+                                new TransferBinaryReadRequest(session.SessionId, entry.RelativePath, offset, length), stream);
+                            offset += response.Length;
+                            transferredBytes += response.Length;
+                            continue;
+                        }
+                        catch (InvalidOperationException exception) when (IsBinaryTransferUnsupported(exception))
+                        {
+                            useBinary = false;
+                        }
+                    }
+                    var jsonResponse = await connection.SendAsync<TransferReadChunkResponse>(new ControlTransferReadChunkRequest(1, connection.ControllerId,
+                        new TransferReadChunkRequest(session.SessionId, entry.RelativePath, offset, length)));
+                    var hash = Convert.ToHexString(SHA256.HashData(jsonResponse.Chunk.Data));
+                    if (!string.Equals(hash, jsonResponse.ChunkSha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Downloaded chunk hash mismatch.");
+                    await stream.WriteAsync(jsonResponse.Chunk.Data); offset += jsonResponse.Chunk.Data.Length; transferredBytes += jsonResponse.Chunk.Data.Length;
                 }
             }
-            if (!string.Equals(await HashFileAsync(part), entry.Sha256, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException($"Final hash mismatch for '{entry.RelativePath}'.");
+            if (entry.Sha256 is not null && !string.Equals(await HashFileAsync(part), entry.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"Final hash mismatch for '{entry.RelativePath}'.");
             File.Move(part, final, true);
         }
+        return transferredBytes;
     }
 
-    internal static async Task<FileManifest> BuildLocalManifestAsync(string path)
+    private static bool IsBinaryTransferUnsupported(InvalidOperationException exception) =>
+        exception.Message.Contains("not supported", StringComparison.OrdinalIgnoreCase);
+
+    internal static async Task<FileManifest> BuildLocalManifestAsync(string path, bool includeHashes = true)
     {
         var full = Path.GetFullPath(path); var entries = new List<FileManifestEntry>();
-        if (File.Exists(full)) { var f = new FileInfo(full); entries.Add(new FileManifestEntry(string.Empty, f.Length, f.LastWriteTimeUtc, await HashFileAsync(full))); }
+        if (File.Exists(full)) { var f = new FileInfo(full); entries.Add(new FileManifestEntry(string.Empty, f.Length, f.LastWriteTimeUtc, includeHashes ? await HashFileAsync(full) : null, FileEntryKind.File)); }
         else if (Directory.Exists(full))
         {
             foreach (var entry in LocalTransferPaths.Enumerate(full))
             {
                 var relativePath = Path.GetRelativePath(full, entry).Replace('\\', '/');
-                if (Directory.Exists(entry)) entries.Add(new FileManifestEntry(relativePath, 0, Directory.GetLastWriteTimeUtc(entry), null));
-                else { var file = new FileInfo(entry); entries.Add(new FileManifestEntry(relativePath, file.Length, file.LastWriteTimeUtc, await HashFileAsync(entry))); }
+                if (Directory.Exists(entry)) entries.Add(new FileManifestEntry(relativePath, 0, Directory.GetLastWriteTimeUtc(entry), null, FileEntryKind.Directory));
+                else { var file = new FileInfo(entry); entries.Add(new FileManifestEntry(relativePath, file.Length, file.LastWriteTimeUtc, includeHashes ? await HashFileAsync(entry) : null, FileEntryKind.File)); }
             }
         }
         else throw new FileNotFoundException(path);
@@ -153,6 +229,9 @@ public static class FileCommand
     }
 
     private static async Task<string> HashFileAsync(string path) { await using var s = File.OpenRead(path); return Convert.ToHexString(await SHA256.HashDataAsync(s)); }
+
+    private static bool IsFile(FileManifestEntry entry) =>
+        entry.Kind == FileEntryKind.File || entry.Kind is null && entry.Sha256 is not null;
 
     private static bool TryCommon(string[] args, out string? op, out IPEndPoint? endpoint, out string? fingerprint, out string? path, out Dictionary<string, string?> options, out string? error)
     {

@@ -177,12 +177,22 @@ internal static class UpdateCommand
             files.Add(new UpdatePackageFile(relativePath, info.Length, await HashFileAsync(path).ConfigureAwait(false)));
         }
         var agentPath = Path.Combine(root, "Rc.Agent.exe");
-        var resolvedVersion = version ?? (File.Exists(agentPath) ? FileVersionInfo.GetVersionInfo(agentPath).ProductVersion : null);
-        if (!Version.TryParse(resolvedVersion, out _))
+        var fileVersion = File.Exists(agentPath) ? FileVersionInfo.GetVersionInfo(agentPath) : null;
+        var resolvedVersion = NormalizePackageVersion(version ?? fileVersion?.FileVersion ?? fileVersion?.ProductVersion);
+        if (resolvedVersion is null)
         {
             throw new ArgumentException("--version is required when the package does not expose a valid Rc.Agent.exe version.");
         }
-        return new UpdatePackageManifest("RemoteController", resolvedVersion!, files);
+        return new UpdatePackageManifest("RemoteController", resolvedVersion, files);
+    }
+
+    internal static string? NormalizePackageVersion(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var candidate = value.Trim();
+        var metadataSeparator = candidate.IndexOf('+');
+        if (metadataSeparator > 0) candidate = candidate[..metadataSeparator];
+        return Version.TryParse(candidate, out _) ? candidate : null;
     }
 
     private static async Task<string> HashFileAsync(string path)

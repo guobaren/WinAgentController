@@ -36,9 +36,9 @@ public sealed record AgentOptions
     public string FileRoot { get; init; } = Environment.GetEnvironmentVariable("RC_AGENT_FILE_ROOT")
         ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-    public long TransferQuotaBytes { get; init; } = ReadLong("RC_TRANSFER_QUOTA_BYTES", 200L * 1024 * 1024);
+    public long TransferQuotaBytes { get; init; } = ReadLong("RC_TRANSFER_QUOTA_BYTES", 2L * 1024 * 1024 * 1024);
 
-    public int MaximumTransferChunkBytes { get; init; } = checked((int)ReadLong("RC_TRANSFER_MAX_CHUNK_BYTES", 1024 * 1024));
+    public int MaximumTransferChunkBytes { get; init; } = checked((int)ReadLong("RC_TRANSFER_MAX_CHUNK_BYTES", 64L * 1024 * 1024));
 
     public long MaximumUpdatePackageBytes { get; init; } = ReadLong("RC_UPDATE_MAX_PACKAGE_BYTES", 1024L * 1024 * 1024);
 

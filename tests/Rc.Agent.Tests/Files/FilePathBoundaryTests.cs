@@ -70,6 +70,21 @@ public sealed class FilePathBoundaryTests
         }
     }
 
+    [Fact]
+    public async Task LocalStreamingManifestUsesMetadataWithoutReadingFileHash()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "payload.bin");
+        await File.WriteAllBytesAsync(path, [1, 2, 3, 4]);
+
+        var manifest = await FileCommand.BuildLocalManifestAsync(path, includeHashes: false);
+
+        var entry = Assert.Single(manifest.Entries);
+        Assert.Equal(FileEntryKind.File, entry.Kind);
+        Assert.Null(entry.Sha256);
+        Assert.Equal(4, entry.Length);
+    }
+
     private static async Task CreateJunctionAsync(string path, string target)
     {
         var startInfo = new ProcessStartInfo("cmd.exe")

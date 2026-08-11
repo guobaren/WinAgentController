@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory)][ValidateNotNullOrEmpty()][string]$Endpoint,
     [Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$Fingerprint,
     [string]$RcCliPath = (Join-Path $PSScriptRoot '..\artifacts\publish\Rc.Cli.exe'),
-    [ValidateRange(0, 10000)][int]$StepDelayMilliseconds = 800,
+    [ValidateRange(0, 10000)][int]$StepDelayMilliseconds = 400,
     [ValidateRange(0, 30)][int]$RetryableUiAttempts = 20
 )
 

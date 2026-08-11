@@ -39,7 +39,7 @@ Important configuration values:
 | `TcpPort` | Agent TCP listener, default `43001`. |
 | `UiUser` | Interactive Windows user for UI control; blank selects the current administrator. |
 | `NoFirewallRule` | Set only when firewall rules are managed separately. |
-| `RegenerateIdentity` | Default `true`; removes old pairing and generates a new TLS identity and fingerprint. Use `false` for a routine refresh that must preserve pairing. |
+| `RegenerateIdentity` | Default `false`; preserves the existing TLS identity and pairing. Set `true` only for an intentional identity reset that requires fingerprint verification and re-pairing. |
 | `ArmPairing` | Default `true`; emits a new 10-minute one-time code. |
 
 Use `scripts/Install-RemoteController.ps1` only for manual or advanced installation. The configuration-driven `.cmd` is the normal target-side one-click entry point and invokes the setup PowerShell script with elevation.
@@ -65,14 +65,16 @@ Omit `--code` to enter the code through standard input instead of command histor
 
 ## Update an installed target
 
-Build a fresh complete package, then apply it:
+Build a fresh complete package. It must include `Invoke-RemoteControllerDetachedUpdate.ps1`, then apply it:
 
 ```powershell
 rcctl update apply 192.168.1.50:43001 --fingerprint <SHA256> --package .\artifacts\publish --wait --timeout-seconds 600 --text
 rcctl update status 192.168.1.50:43001 --fingerprint <SHA256> --update <GUID> --text
 ```
 
-The updater retains `C:\ProgramData\RemoteController`, backs up the installed directory, and restores it when the install script fails. A successful job exit is not a post-update service health check. Verify connectivity and a representative operation after updating, and consult `docs/CURRENT_PROGRESS.md` for current dual-node update coverage.
+The Agent persists `Applying`, then a Broker bootstrap job registers a detached `SYSTEM` scheduled task. The detached runner waits for `update-ready`, writes `update-started`, stops UI/Agent/Broker, installs with rollback protection, and atomically writes `update-result.json`. The restarted Agent uses that result instead of treating the expected Broker interruption as the final outcome.
+
+The updater retains `C:\ProgramData\RemoteController`, backs up the installed directory, and restores it when the install script fails. A `Succeeded` result is not a post-update service health check. Verify the pinned fingerprint, pairing, a harmless authenticated command, Agent/Broker status, UI registration, and relevant UI acceptance behavior. An older Agent without detached-update support needs one trusted local or recovery-channel refresh first.
 
 For a local package refresh, rerun one-click setup with `RegenerateIdentity=false` unless re-pairing is intentional.
 

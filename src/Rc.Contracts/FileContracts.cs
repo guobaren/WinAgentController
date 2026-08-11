@@ -25,7 +25,8 @@ public sealed record FileManifestEntry(
     string RelativePath,
     long Length,
     DateTimeOffset LastWriteTimeUtc,
-    string? Sha256);
+    string? Sha256,
+    FileEntryKind? Kind = null);
 
 public sealed record FileManifestRequest(string RootPath);
 
@@ -151,7 +152,8 @@ public sealed class TransferSessionSnapshot
         DateTimeOffset createdAtUtc,
         DateTimeOffset expiresAtUtc,
         IReadOnlyList<string>? completedRelativePaths = null,
-        IReadOnlyList<TransferChunkReceipt>? completedChunks = null)
+        IReadOnlyList<TransferChunkReceipt>? completedChunks = null,
+        bool streamingIntegrity = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
@@ -181,6 +183,7 @@ public sealed class TransferSessionSnapshot
         ExpiresAtUtc = expiresAtUtc;
         CompletedRelativePaths = Array.AsReadOnly((completedRelativePaths ?? []).ToArray());
         CompletedChunks = Array.AsReadOnly((completedChunks ?? []).ToArray());
+        StreamingIntegrity = streamingIntegrity;
     }
 
     public string SessionId { get; }
@@ -204,6 +207,8 @@ public sealed class TransferSessionSnapshot
     public IReadOnlyList<string> CompletedRelativePaths { get; }
 
     public IReadOnlyList<TransferChunkReceipt> CompletedChunks { get; }
+
+    public bool StreamingIntegrity { get; }
 }
 
 public sealed record TransferChunkReceipt(string RelativePath, long Offset, int Length, string Sha256);
@@ -213,7 +218,8 @@ public sealed record TransferStartRequest(
     string SourcePath,
     string DestinationPath,
     FileManifest Manifest,
-    int ChunkSize);
+    int ChunkSize,
+    bool StreamingIntegrity = false);
 
 public sealed record TransferStartResponse(TransferSessionSnapshot Session);
 
@@ -233,6 +239,25 @@ public sealed class TransferWriteChunkRequest
 }
 
 public sealed record TransferWriteChunkResponse(TransferSessionSnapshot Session);
+
+public sealed record TransferBinaryWriteRequest(
+    string SessionId,
+    string RelativePath,
+    long Offset,
+    int Length,
+    string? ChunkSha256);
+
+public sealed record TransferBinaryReadyResponse(int Length, bool AlreadyCompleted);
+
+public sealed record TransferBinaryWriteResponse(TransferChunkReceipt Receipt);
+
+public sealed record TransferBinaryReadRequest(
+    string SessionId,
+    string RelativePath,
+    long Offset,
+    int MaximumBytes);
+
+public sealed record TransferBinaryReadResponse(int Length, string ChunkSha256);
 
 public sealed class TransferReadChunkRequest
 {
