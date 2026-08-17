@@ -37,6 +37,9 @@ jobs:
           Copy-Item -LiteralPath 'docs/安装说明.md' -Destination (Join-Path $staging 'README.md') -Force
           Copy-Item -LiteralPath 'README.md' -Destination (Join-Path $staging 'README-详细版.md') -Force
           Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $staging 'LICENSE') -Force
+          # 附带项目 Skill：与仓库结构一致（.agents/skills/operate-win-agent-controller），
+          # 安装说明的"给 AI Agent 使用"一节指引从 zip 内直接复制。
+          Copy-Item -LiteralPath '.agents/skills/operate-win-agent-controller' -Destination (Join-Path $staging '.agents/skills') -Recurse -Force
           @"
           version=$version
           tag=$env:GITHUB_REF_NAME
