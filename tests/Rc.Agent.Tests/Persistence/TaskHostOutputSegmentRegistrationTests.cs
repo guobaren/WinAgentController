@@ -108,6 +108,9 @@ public sealed class TaskHostOutputSegmentRegistrationTests
             await Task.WhenAll(write, scan);
         }
 
+        // 最后一轮的段可能未赶上并发扫描，结束时补扫一次以完整注册。
+        await store.RegisterTaskHostOutputSegmentsAsync("job-race");
+
         var segments = await store.ListOutputSegmentsAsync("job-race");
         Assert.Equal(30, segments.Count);
         Assert.All(segments, segment => Assert.Equal(data.Length, segment.ByteLength));

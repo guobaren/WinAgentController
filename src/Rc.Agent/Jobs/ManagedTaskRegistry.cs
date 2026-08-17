@@ -289,6 +289,23 @@ public sealed class ManagedTaskRegistry : IAsyncDisposable
             var current = await GetStatusAsync(jobId, cancellationToken).ConfigureAwait(false);
             return (current.Status, !current.IsActive);
         }
+        catch (InvalidOperationException)
+        {
+            // TaskHost 无终态退出（如被外部终止）：RunScheduledAsync 正将其收敛为
+            // HostCrashed/FailedToStart 并落库；等待终态后返回，而不是把宿主
+            // 异常直接抛给调用方。
+            for (var attempt = 0; attempt < 50; attempt++)
+            {
+                var current = await GetStatusAsync(jobId, cancellationToken).ConfigureAwait(false);
+                if (!current.IsActive)
+                {
+                    return (current.Status, true);
+                }
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+            }
+            var final = await GetStatusAsync(jobId, cancellationToken).ConfigureAwait(false);
+            return (final.Status, !final.IsActive);
+        }
     }
 
     public async Task EnsureRecoveryAsync(CancellationToken cancellationToken = default)
