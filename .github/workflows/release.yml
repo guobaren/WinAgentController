@@ -51,6 +51,9 @@ jobs:
           Get-ChildItem -LiteralPath $staging -File | Measure-Object | Select-Object -ExpandProperty Count
       - name: Publish GitHub release
         shell: pwsh
+        env:
+          # gh CLI 不会自动读取 GITHUB_TOKEN，必须显式注入 GH_TOKEN。
+          GH_TOKEN: ${{ github.token }}
         run: |
           $version = $env:GITHUB_REF_NAME -replace '^v', ''
           gh release create $env:GITHUB_REF_NAME "RemoteController-win-x64-$version.zip" `
