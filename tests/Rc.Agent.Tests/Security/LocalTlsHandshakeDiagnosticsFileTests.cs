@@ -25,4 +25,20 @@ public sealed class LocalTlsHandshakeDiagnosticsFileTests
 
         Assert.False(LocalTlsHandshakeDiagnosticsFile.TryRead(directory.Path, out _));
     }
+
+    [Fact]
+    public async Task ConcurrentWritesNeverThrowAndLeaveReadableDiagnostics()
+    {
+        using var directory = new TemporaryDirectory();
+
+        // 并发 TLS 握手失败会同时写诊断文件；此前无锁的 File.Move(overwrite)
+        // 并发覆盖同一目标会偶发 IOException（云端 CI 已复现）。
+        var writes = Enumerable.Range(0, 32).Select(index => Task.Run(() =>
+            LocalTlsHandshakeDiagnosticsFile.Write(directory.Path, $"stage-{index}", new IOException($"failure-{index}"))));
+        await Task.WhenAll(writes);
+
+        Assert.True(LocalTlsHandshakeDiagnosticsFile.TryRead(directory.Path, out var diagnostic));
+        Assert.NotNull(diagnostic);
+        Assert.Empty(Directory.EnumerateFiles(directory.Path, "*.tmp"));
+    }
 }

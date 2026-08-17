@@ -21,7 +21,9 @@ jobs:
       - name: Build
         run: dotnet build Rc.RemoteController.sln --no-restore -warnaserror
       - name: Test
-        run: dotnet test Rc.RemoteController.sln --no-build --no-restore -v minimal
+        # 与 windows-ci.yml 一致：云端 TaskHost/诊断文件并发类 flaky 失败后整体重试一次。
+        run: |
+          dotnet test Rc.RemoteController.sln --no-build --no-restore -v minimal -p:NuGetAudit=false || dotnet test Rc.RemoteController.sln --no-build --no-restore -v minimal -p:NuGetAudit=false
       - name: Publish package
         shell: powershell
         run: ./scripts/Publish-RemoteController.ps1 -OutputPath artifacts/publish

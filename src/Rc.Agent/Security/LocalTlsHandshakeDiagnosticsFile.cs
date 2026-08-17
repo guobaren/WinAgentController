@@ -80,17 +80,34 @@ public static class LocalTlsHandshakeDiagnosticsFile
         }
     }
 
+    private static readonly object writeGate = new();
+
     private static void WriteAtomic(string path, LocalTlsHandshakeDiagnostic diagnostic)
     {
         var temporaryPath = Path.Combine(Path.GetDirectoryName(path)!, $".{FileName}.{Guid.NewGuid():N}.tmp");
-        try
+        // 串行化：并发 TLS 握手失败会并发覆盖同一诊断文件，两个 File.Move(overwrite)
+        // 同时执行可能互相占用目标而抛 IOException（云端 CI 已复现）。
+        lock (writeGate)
         {
-            File.WriteAllText(temporaryPath, JsonSerializer.Serialize(diagnostic));
-            File.Move(temporaryPath, path, overwrite: true);
-        }
-        finally
-        {
-            File.Delete(temporaryPath);
+            try
+            {
+                File.WriteAllText(temporaryPath, JsonSerializer.Serialize(diagnostic));
+                File.Move(temporaryPath, path, overwrite: true);
+            }
+            finally
+            {
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch (IOException)
+                {
+                    // 诊断写入失败不得影响 TLS 握手结果。
+                }
+                catch (UnauthorizedAccessException)
+                {
+                }
+            }
         }
     }
 }
