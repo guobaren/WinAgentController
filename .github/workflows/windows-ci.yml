@@ -27,7 +27,5 @@ jobs:
         run: |
           $required = 'Rc.Agent.exe', 'Rc.PrivilegedBroker.exe', 'Rc.TaskHost.exe', 'Rc.UiAgent.exe', 'Rc.Cli.exe', 'Install-RemoteController.ps1', 'Update-RemoteController.ps1', 'Uninstall-RemoteController.ps1', 'Start-RemoteController.cmd'
           foreach ($file in $required) { if (-not (Test-Path "artifacts/publish/$file" -PathType Leaf)) { throw "Missing $file" } }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: remote-controller-win-x64
-          path: artifacts/publish/**
+      # 不上传 artifact：完整包约 690 MB，会迅速耗尽 Actions 存储配额；
+      # 正式分发由 tag 触发的 release.yml 发布到 GitHub Release，CI 仅做构建与测试门禁。
