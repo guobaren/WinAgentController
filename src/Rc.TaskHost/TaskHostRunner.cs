@@ -659,7 +659,13 @@ public sealed class TaskHostSegmentWriter
         var relativePath = $"segments/{jobId}/{streamName}/{fileName}";
         var fullPath = GetFullPath(relativePath);
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
-        await File.WriteAllBytesAsync(fullPath, data.ToArray(), cancellationToken).ConfigureAwait(false);
+        // 原子写：先写同目录临时文件再改名。此前直接写目标路径时，Agent 侧
+        // RegisterTaskHostOutputSegmentsAsync 的两次长度读取可能落在写入中间
+        // （枚举时半截、校验时全长），触发 "segment length does not match" 竞态。
+        // 临时文件以 .tmp- 结尾，不会被 *.seg 枚举匹配，不会误注册。
+        var temporaryPath = fullPath + ".tmp-" + Guid.NewGuid().ToString("N");
+        await File.WriteAllBytesAsync(temporaryPath, data.ToArray(), cancellationToken).ConfigureAwait(false);
+        File.Move(temporaryPath, fullPath, overwrite: true);
         var createdAtUtc = new FileInfo(fullPath).CreationTimeUtc;
         return new TaskOutputSegment(jobId, stream, relativePath, startOffset, data.Length, createdAtUtc);
     }

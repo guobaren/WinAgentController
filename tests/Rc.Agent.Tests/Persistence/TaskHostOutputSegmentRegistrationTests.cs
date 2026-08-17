@@ -88,6 +88,34 @@ public sealed class TaskHostOutputSegmentRegistrationTests
     }
 
     [Fact]
+    public async Task SegmentRegistrationNeverObservesPartiallyWrittenTaskHostSegments()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(directory.Path);
+        await store.InitializeAsync();
+        var createdAt = DateTimeOffset.UtcNow;
+        await store.SaveJobSnapshotAsync(new JobSnapshot("job-race", JobState.Running, null, createdAt, createdAt, null, null));
+        var writer = new TaskHostSegmentWriter(directory.Path);
+        var data = Enumerable.Range(0, 64 * 1024).Select(index => (byte)(index % 251)).ToArray();
+
+        // 写段与注册扫描并发多轮：若段文件非原子写入（直接写目标路径），
+        // 扫描的两次长度读取可能命中写入中间而抛 InvalidDataException。
+        for (var round = 0; round < 30; round++)
+        {
+            var offset = round * data.Length;
+            var write = writer.WriteAsync("job-race", JobOutputKind.Stdout, offset, data);
+            var scan = store.RegisterTaskHostOutputSegmentsAsync("job-race");
+            await Task.WhenAll(write, scan);
+        }
+
+        var segments = await store.ListOutputSegmentsAsync("job-race");
+        Assert.Equal(30, segments.Count);
+        Assert.All(segments, segment => Assert.Equal(data.Length, segment.ByteLength));
+        Assert.Empty(Directory.EnumerateFiles(
+            Path.Combine(directory.Path, "segments", "job-race", "stdout"), "*.tmp-*", SearchOption.TopDirectoryOnly));
+    }
+
+    [Fact]
     public async Task RegisterTaskHostOutputSegmentsAsyncRejectsUnsafeJobIdsAndUnknownJobs()
     {
         using var directory = new TemporaryDirectory();
