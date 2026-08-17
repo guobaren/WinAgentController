@@ -162,9 +162,25 @@ internal sealed class TemporaryDirectory : IDisposable
     public void Dispose()
     {
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-        if (Directory.Exists(Path))
+        if (!Directory.Exists(Path))
         {
-            Directory.Delete(Path, recursive: true);
+            return;
         }
+
+        // 独立进程（Agent/Broker/TaskHost）可能短暂持有文件句柄；删除目录时重试等待释放。
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            try
+            {
+                Directory.Delete(Path, recursive: true);
+                return;
+            }
+            catch (IOException) when (attempt < 4)
+            {
+                Thread.Sleep(200);
+            }
+        }
+
+        Directory.Delete(Path, recursive: true);
     }
 }

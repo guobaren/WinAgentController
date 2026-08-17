@@ -41,7 +41,10 @@ jobs:
           Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $staging 'LICENSE') -Force
           # 附带项目 Skill：与仓库结构一致（.agents/skills/operate-win-agent-controller），
           # 安装说明的"给 AI Agent 使用"一节指引从 zip 内直接复制。
-          Copy-Item -LiteralPath '.agents/skills/operate-win-agent-controller' -Destination (Join-Path $staging '.agents/skills') -Recurse -Force
+          # 注意：必须先创建目标父目录，否则 Copy-Item 会把源目录重命名为目标（层级丢失）。
+          $skillDestination = Join-Path $staging '.agents\skills'
+          New-Item -ItemType Directory -Path $skillDestination -Force | Out-Null
+          Copy-Item -LiteralPath '.agents/skills/operate-win-agent-controller' -Destination (Join-Path $skillDestination 'operate-win-agent-controller') -Recurse -Force
           @"
           version=$version
           tag=$env:GITHUB_REF_NAME
