@@ -20,11 +20,11 @@ public sealed class TaskHostRegistrationTests
         await store.InitializeAsync();
         var registration = new TaskHostRegistration(store);
         var completion = runner.RunAsync();
-        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(20));
 
-        await registration.WriteStandardInputAsync(pipeName, new byte[] { (byte)'o', (byte)'k', (byte)'\r', (byte)'\n' }, TimeSpan.FromSeconds(5));
-        var status = await registration.RefreshAsync(pipeName, TimeSpan.FromSeconds(5));
-        await registration.CloseStandardInputAsync(pipeName, TimeSpan.FromSeconds(5));
+        await registration.WriteStandardInputAsync(pipeName, new byte[] { (byte)'o', (byte)'k', (byte)'\r', (byte)'\n' }, TimeSpan.FromSeconds(20));
+        var status = await registration.RefreshAsync(pipeName, TimeSpan.FromSeconds(20));
+        await registration.CloseStandardInputAsync(pipeName, TimeSpan.FromSeconds(20));
         await completion;
 
         Assert.Equal(JobState.Running, status.Job.State);

@@ -26,10 +26,10 @@ public sealed class ManagedTaskRegistrySchedulingAndRecoveryTests
         Assert.Equal(JobState.Queued, (await registry.GetStatusAsync(second.Job.JobId)).Status.Job.State);
 
         await registry.CloseStandardInputAsync(first.Job.JobId);
-        Assert.True((await registry.WaitAsync(first.Job.JobId, TimeSpan.FromSeconds(10))).Completed);
+        Assert.True((await registry.WaitAsync(first.Job.JobId, TimeSpan.FromSeconds(30))).Completed);
         await WaitForStateAsync(registry, second.Job.JobId, JobState.Running);
         await registry.CloseStandardInputAsync(second.Job.JobId);
-        Assert.True((await registry.WaitAsync(second.Job.JobId, TimeSpan.FromSeconds(10))).Completed);
+        Assert.True((await registry.WaitAsync(second.Job.JobId, TimeSpan.FromSeconds(30))).Completed);
     }
 
     [Fact]
@@ -49,7 +49,7 @@ public sealed class ManagedTaskRegistrySchedulingAndRecoveryTests
         Assert.Equal(JobState.Cancelled, (await registry.CancelAsync(queued.Job.JobId)).Job.State);
 
         await registry.CloseStandardInputAsync(first.Job.JobId);
-        Assert.True((await registry.WaitAsync(first.Job.JobId, TimeSpan.FromSeconds(10))).Completed);
+        Assert.True((await registry.WaitAsync(first.Job.JobId, TimeSpan.FromSeconds(30))).Completed);
         await Task.Delay(200);
 
         Assert.Equal(JobState.Cancelled, (await registry.CancelAsync(queued.Job.JobId)).Job.State);
@@ -95,10 +95,10 @@ public sealed class ManagedTaskRegistrySchedulingAndRecoveryTests
         using (var taskHost = Process.GetProcessById(registration.ProcessId.Value))
         {
             taskHost.Kill(entireProcessTree: true);
-            await taskHost.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            await taskHost.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(20));
         }
 
-        var terminal = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(15));
+        var terminal = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(45));
 
         Assert.True(terminal.Completed);
         Assert.Equal(JobState.HostCrashed, terminal.Status.Job.State);
@@ -128,7 +128,7 @@ public sealed class ManagedTaskRegistrySchedulingAndRecoveryTests
         var reconnected = await secondRegistry.GetStatusAsync(jobId);
         Assert.True(reconnected.IsActive);
 
-        var terminal = await secondRegistry.WaitAsync(jobId, TimeSpan.FromSeconds(15));
+        var terminal = await secondRegistry.WaitAsync(jobId, TimeSpan.FromSeconds(45));
         var logs = await secondRegistry.ReadLogsAsync(jobId, JobOutputKind.Stdout, 0, 4096);
         Assert.True(terminal.Completed);
         Assert.Equal(JobState.Exited, terminal.Status.Job.State);

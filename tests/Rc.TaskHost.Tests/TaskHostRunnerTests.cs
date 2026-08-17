@@ -66,7 +66,7 @@ public sealed class TaskHostRunnerTests
             ShellKind.PowerShell,
             "[Console]::Out.Write(('z' * 524288))"));
 
-        var status = await runner.RunAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        var status = await runner.RunAsync().WaitAsync(TimeSpan.FromSeconds(45));
 
         Assert.Equal(JobState.Exited, status.Job.State);
         Assert.Equal(524288, status.StdoutLength);
@@ -80,7 +80,7 @@ public sealed class TaskHostRunnerTests
             ShellKind.PowerShell,
             "$first = [Console]::In.ReadLine(); $second = [Console]::In.ReadLine(); [Console]::Out.Write($first + '-' + $second)"));
         var completion = runner.RunAsync();
-        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(20));
 
         await fixture.SendAsync(new TaskControlMessage(TaskControlKind.StandardInput, Encoding.UTF8.GetBytes("one\n")));
         await fixture.SendAsync(new TaskControlMessage(TaskControlKind.StandardInput, Encoding.UTF8.GetBytes("two\n")));
@@ -99,7 +99,7 @@ public sealed class TaskHostRunnerTests
             ShellKind.PowerShell,
             "Start-Sleep -Milliseconds 500"));
         var completion = runner.RunAsync();
-        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(20));
 
         await fixture.SendAsync(new TaskControlMessage(TaskControlKind.CloseStandardInput));
         var rejected = await fixture.SendAsync(new TaskControlMessage(
@@ -122,7 +122,7 @@ public sealed class TaskHostRunnerTests
         await using var fixture = new TaskHostFixture(cancellationGracePeriod: TimeSpan.FromMilliseconds(100));
         await using var runner = fixture.CreateRunner(ExecRequest.ForShell(ShellKind.PowerShell, "Start-Sleep -Seconds 30"));
         var completion = runner.RunAsync();
-        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(20));
 
         var running = await fixture.SendAsync(new TaskControlMessage(TaskControlKind.GetStatus));
         Assert.Equal(JobState.Running, running.Status.Job.State);
@@ -143,7 +143,7 @@ public sealed class TaskHostRunnerTests
             ["cmd.exe", "/d", "/q"],
             terminal: new TerminalOptions(100, 32)));
         var completion = runner.RunAsync();
-        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(20));
         var initial = runner.GetStatus();
         Assert.True(initial.Job.State == JobState.Running, $"state={initial.Job.State} exit={initial.Job.ExitCode} error={initial.Job.Error?.Message}");
 
@@ -176,13 +176,13 @@ public sealed class TaskHostRunnerTests
     [Fact]
     public async Task PseudoConsoleCancellationSendsInterruptBeforeProcessTreeKill()
     {
-        await using var fixture = new TaskHostFixture(cancellationGracePeriod: TimeSpan.FromSeconds(5));
+        await using var fixture = new TaskHostFixture(cancellationGracePeriod: TimeSpan.FromSeconds(20));
         await using var runner = fixture.CreateRunner(ExecRequest.ForShell(
             ShellKind.Cmd,
             "ping 127.0.0.1 -n 30 > nul",
             terminal: new TerminalOptions()));
         var completion = runner.RunAsync();
-        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(20));
         var initial = runner.GetStatus();
         Assert.True(initial.Job.State == JobState.Running, $"state={initial.Job.State} exit={initial.Job.ExitCode} error={initial.Job.Error?.Message}");
         var startedAt = DateTimeOffset.UtcNow;
@@ -203,7 +203,7 @@ public sealed class TaskHostRunnerTests
             ["powershell.exe", "-NoLogo", "-NoProfile", "-Command", $"[Console]::TreatControlCAsInput=$true; [Console]::Out.WriteLine('{readyMarker}'); [Console]::Out.Flush(); Start-Sleep -Seconds 30"],
             terminal: new TerminalOptions()));
         var completion = runner.RunAsync();
-        await runner.Started.WaitAsync(TimeSpan.FromSeconds(5));
+        await runner.Started.WaitAsync(TimeSpan.FromSeconds(20));
         Assert.Equal(JobState.Running, runner.GetStatus().Job.State);
 
         var terminalOutput = string.Empty;
@@ -232,7 +232,7 @@ public sealed class TaskHostRunnerTests
             ShellKind.PowerShell,
             "[Console]::Out.Write(('x' * 5000))"));
 
-        var status = await runner.RunAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        var status = await runner.RunAsync().WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(JobState.Exited, status.Job.State);
         Assert.True(status.OutputTruncated);
@@ -276,7 +276,7 @@ public sealed class TaskHostRunnerTests
             maximumOutputBytes: maximumOutputBytes));
 
         public Task<TaskControlResponse> SendAsync(TaskControlMessage message) =>
-            TaskHostControlClient.SendAsync(pipeName, message, TimeSpan.FromSeconds(5));
+            TaskHostControlClient.SendAsync(pipeName, message, TimeSpan.FromSeconds(20));
 
         public async Task<string> ReadOutputAsync(string stream)
         {

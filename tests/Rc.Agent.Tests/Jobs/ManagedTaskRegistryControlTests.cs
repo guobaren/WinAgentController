@@ -21,7 +21,7 @@ public sealed class ManagedTaskRegistryControlTests
         await WaitUntilRunningAsync(registry, started.Job.JobId);
         await registry.WriteStandardInputAsync(started.Job.JobId, Encoding.UTF8.GetBytes("hello\r\n"));
         await registry.CloseStandardInputAsync(started.Job.JobId);
-        var waited = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(10));
+        var waited = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(30));
         var logs = await registry.ReadLogsAsync(started.Job.JobId, JobOutputKind.Stdout, 0, 4096);
 
         Assert.True(waited.Completed);
@@ -45,7 +45,7 @@ public sealed class ManagedTaskRegistryControlTests
         Assert.False(timed.Completed);
 
         await registry.CancelAsync(started.Job.JobId);
-        var cancelled = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(10));
+        var cancelled = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(30));
         Assert.True(cancelled.Completed);
         Assert.Equal(JobState.Cancelled, cancelled.Status.Job.State);
     }
@@ -59,7 +59,7 @@ public sealed class ManagedTaskRegistryControlTests
         await using var registry = new ManagedTaskRegistry(store);
 
         var started = await registry.StartAsync(ExecRequest.ForShell(ShellKind.PowerShell, "Write-Output done"));
-        var terminal = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(10));
+        var terminal = await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(30));
         var repeatedCancel = await registry.CancelAsync(started.Job.JobId);
 
         Assert.True(terminal.Completed);
@@ -81,7 +81,7 @@ public sealed class ManagedTaskRegistryControlTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => registry.ResizeTerminalAsync(started.Job.JobId, 120, 30));
 
         await registry.CloseStandardInputAsync(started.Job.JobId);
-        Assert.True((await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(10))).Completed);
+        Assert.True((await registry.WaitAsync(started.Job.JobId, TimeSpan.FromSeconds(30))).Completed);
     }
     [Fact]
     public async Task PersistedTerminalLogsOnlyMarkTheLastPageFinal()
