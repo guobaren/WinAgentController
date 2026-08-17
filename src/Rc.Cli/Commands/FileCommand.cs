@@ -104,6 +104,9 @@ public static class FileCommand
     {
         var root = Path.GetFullPath(localRoot);
         var transferredBytes = 0L;
+        var completedChunks = session.CompletedChunks
+            .Select(receipt => (receipt.RelativePath, receipt.Offset, receipt.Length))
+            .ToHashSet();
         foreach (var entry in session.Manifest.Entries.Where(IsFile))
         {
             var file = string.IsNullOrEmpty(entry.RelativePath) ? root : Path.Combine(root, entry.RelativePath.Replace('/', Path.DirectorySeparatorChar));
@@ -111,7 +114,7 @@ public static class FileCommand
             for (long offset = 0; offset < entry.Length; offset += session.ChunkSize)
             {
                 var length = checked((int)Math.Min(session.ChunkSize, entry.Length - offset));
-                if (session.CompletedChunks.Any(r => r.RelativePath == entry.RelativePath && r.Offset == offset && r.Length == length)) continue;
+                if (completedChunks.Contains((entry.RelativePath, offset, length))) continue;
                 stream.Position = offset;
                 await connection.SendBinaryUploadAsync(
                     new TransferBinaryWriteRequest(session.SessionId, entry.RelativePath, offset, length, null),

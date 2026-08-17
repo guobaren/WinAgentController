@@ -108,6 +108,9 @@ public sealed class TlsControlListener : IAsyncDisposable
             while (!linked.IsCancellationRequested)
             {
                 var client = await listener.AcceptTcpClientAsync(linked.Token);
+                // 文件传输会交替发送微小控制/就绪帧和二进制数据；关闭 Nagle，
+                // 避免小文件目录中的每个文件都承担一次延迟 ACK 定时等待。
+                client.NoDelay = true;
                 _ = ServeClientAsync(client, linked.Token);
             }
         }

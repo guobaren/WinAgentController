@@ -204,6 +204,40 @@ public sealed class FileTransferServiceTests
     }
 
     [Fact]
+    public async Task StreamingDirectoryUploadIndexesManySingleChunkFiles()
+    {
+        using var directory = new TemporaryDirectory();
+        await using var store = new AgentStateStore(Path.Combine(directory.Path, "state"));
+        await store.InitializeAsync();
+        const int fileCount = 2048;
+        var manifest = new FileManifest("local", Enumerable.Range(0, fileCount)
+            .Select(index => new FileManifestEntry($"files/{index:D4}.bin", 1, DateTimeOffset.UtcNow, null, FileEntryKind.File))
+            .ToArray());
+        using var service = CreateService(store, directory.Path, quota: fileCount, maximumChunk: 1);
+        var session = (await service.StartTransferAsync(new TransferStartRequest(
+            TransferDirection.Upload, "local", "many", manifest, 1, StreamingIntegrity: true))).Session;
+
+        for (var index = 0; index < fileCount; index++)
+        {
+            await service.WriteBinaryChunkAsync(
+                new TransferBinaryWriteRequest(session.SessionId, $"files/{index:D4}.bin", 0, 1, null),
+                new MemoryStream([(byte)(index % 251)]),
+                _ => Task.CompletedTask);
+        }
+
+        var status = await service.StatusAsync(new TransferStatusRequest(session.SessionId));
+        Assert.Equal(fileCount, status.Session.CompletedChunks.Count);
+        Assert.Equal(fileCount, status.Session.CompletedRelativePaths.Count);
+
+        var completed = await service.CompleteAsync(new TransferCompleteRequest(session.SessionId));
+
+        Assert.Equal(fileCount, completed.Session.CompletedChunks.Count);
+        Assert.Equal(fileCount, completed.Session.CompletedRelativePaths.Count);
+        Assert.Equal(new byte[] { 0 }, await File.ReadAllBytesAsync(Path.Combine(directory.Path, "many", "files", "0000.bin")));
+        Assert.Equal(new byte[] { (byte)((fileCount - 1) % 251) }, await File.ReadAllBytesAsync(Path.Combine(directory.Path, "many", "files", "2047.bin")));
+    }
+
+    [Fact]
     public async Task StreamingCheckpointPersistsCompletedChunksAtConfiguredBoundary()
     {
         using var directory = new TemporaryDirectory();

@@ -28,7 +28,12 @@ internal sealed class PinnedTlsConnection : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(endpoint);
         ArgumentException.ThrowIfNullOrWhiteSpace(expectedFingerprint);
 
-        var client = new TcpClient(endpoint.AddressFamily);
+        var client = new TcpClient(endpoint.AddressFamily)
+        {
+            // 控制协议会交替发送小型 JSON 帧、单字节就绪信号和二进制数据。
+            // 若启用 Nagle，它会与延迟 ACK 叠加，让每个小文件分片多等待一个网络定时周期。
+            NoDelay = true,
+        };
         try
         {
             await client.ConnectAsync(endpoint.Address, endpoint.Port);
