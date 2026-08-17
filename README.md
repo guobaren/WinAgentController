@@ -97,6 +97,20 @@ New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
 Copy-Item -LiteralPath $source -Destination $destination -Recurse
 ```
 
+**从 GitHub Releases 下载的发布包已附带该 Skill**（zip 内 `.agents\skills\operate-win-agent-controller\`），解压后同样可复制安装，无需克隆仓库：
+
+```powershell
+$source = '<解压目录>\.agents\skills\operate-win-agent-controller'
+$destination = Join-Path $env:USERPROFILE '.codex\skills\operate-win-agent-controller'
+
+if (Test-Path -LiteralPath $destination) {
+    throw "目标 Skill 已存在，请先确认是否需要更新：$destination"
+}
+
+New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
+Copy-Item -LiteralPath $source -Destination $destination -Recurse
+```
+
 安装后在下一次对话中使用 `$operate-win-agent-controller`。该 Skill 是 Agent 操作指南，不会替代被控端的 `Setup-RemoteControllerAgent.cmd`，普通部署用户无需安装它。具体行为仍以当前代码、脚本和 [`docs/交接.md`](docs/交接.md)、[`docs/审计.md`](docs/审计.md) 为准。
 
 ## 架构与安全边界
