@@ -15,7 +15,11 @@ param(
     [ValidateRange(1, 67108864)]
     [int]$ChunkSize = 64 * 1024 * 1024,
 
-    [switch]$SkipGenerate
+    [switch]$SkipGenerate,
+
+    # 默认在测试成功后清理本地 source/download 与远端基准目录；
+    # 指定本开关可保留现场（排查失败或复测时使用）。
+    [switch]$KeepArtifacts
 )
 
 $ErrorActionPreference = 'Stop'
@@ -135,6 +139,34 @@ $downloadRoot = Join-Path $WorkRoot 'download'
 $smallDownload = Join-Path $downloadRoot 'small'
 $largeDownload = Join-Path $downloadRoot 'large.bin'
 
+function Remove-BenchmarkArtifacts {
+    # 清理本地生成数据（source/download）与远端基准目录。
+    # 仅在测试成功路径调用；清理失败只警告，不影响已完成的测试结论。
+    try {
+        foreach ($path in @($sourceRoot, $downloadRoot)) {
+            if (Test-Path -LiteralPath $path) {
+                Remove-Item -LiteralPath $path -Recurse -Force
+            }
+        }
+        # 远端文件根取 RC_AGENT_FILE_ROOT，未显式配置时按 Agent 文档回退到运行账户用户目录。
+        $remoteCommand = '$root = $env:RC_AGENT_FILE_ROOT; if (-not $root) { $root = [Environment]::GetFolderPath(''UserProfile'') }; $target = Join-Path $root ' + "'$RemoteRoot'" + '; if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force; Write-Output ("removed:" + $target) } else { Write-Output ("absent:" + $target) }'
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $cleanupOutput = @(& $CliPath 'exec' $Target '--fingerprint' $Fingerprint '--command' $remoteCommand '--text' 2>&1)
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Remote benchmark root cleanup failed (exit $LASTEXITCODE): $($cleanupOutput -join ' ')"
+        }
+    }
+    catch {
+        Write-Warning "Benchmark artifact cleanup failed: $($_.Exception.Message)"
+    }
+}
+
 if (-not (Test-Path -LiteralPath $CliPath -PathType Leaf)) {
     throw "Rc.Cli.exe was not found: $CliPath"
 }
@@ -190,6 +222,10 @@ $largeSourceHash = (Get-FileHash -LiteralPath $largePath -Algorithm SHA256).Hash
 $largeDownloadedHash = (Get-FileHash -LiteralPath $largeDownload -Algorithm SHA256).Hash
 if ($largeSourceHash -cne $largeDownloadedHash) {
     throw 'Large-file SHA-256 mismatch.'
+}
+
+if (-not $KeepArtifacts) {
+    Remove-BenchmarkArtifacts
 }
 
 [pscustomobject]@{

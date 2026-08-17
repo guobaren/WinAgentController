@@ -2,11 +2,11 @@
 
 ## Establish current state
 
-1. Read `docs/CURRENT_PROGRESS.md` for current test evidence and unresolved scenarios.
+1. Read `docs/审计.md` and `docs/交接.md` for current test evidence and unresolved scenarios.
 2. Check `git status --short --branch` and preserve unrelated changes.
 3. Check the installed .NET SDK against `global.json` before interpreting build failures.
 4. Run the smallest relevant validation first, then the full solution checks when the change warrants it.
-5. Record environment-dependent or still-failing tests in `docs/CURRENT_PROGRESS.md` when the task requires progress tracking; do not label them fixed without evidence.
+5. Record environment-dependent or still-failing tests in `docs/审计.md` when the task requires progress tracking; do not label them fixed without evidence.
 
 ## Diagnose target connectivity
 
@@ -55,7 +55,7 @@ An update result reports whether the detached install script completed. It does 
 1. Probe the pinned fingerprint.
 2. Run a harmless authenticated command.
 3. Validate UI registration if UI control is required.
-4. Check `docs/CURRENT_PROGRESS.md` before claiming dual-node update, interrupted transfer, or rollback coverage is complete.
+4. Check `docs/审计.md` before claiming dual-node update, interrupted transfer, or rollback coverage is complete.
 
 ## Keep documentation accurate
 

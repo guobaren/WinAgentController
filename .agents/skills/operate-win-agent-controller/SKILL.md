@@ -7,7 +7,7 @@ description: Deploy, install, pair, operate, update, validate, and troubleshoot 
 
 ## Overview
 
-Operate WinAgentController from source checkout through target deployment and authenticated control. Treat the repository README, CLI usage strings, and `docs/CURRENT_PROGRESS.md` as the live sources of truth.
+Operate WinAgentController from source checkout through target deployment and authenticated control. Treat the repository README, CLI usage strings, and `docs/交接.md`/`docs/审计.md` as the live sources of truth.
 
 ## Choose the workflow
 
@@ -27,7 +27,7 @@ Operate WinAgentController from source checkout through target deployment and au
 5. Use `--elevated` only when the requested remote command genuinely requires administrator rights.
 6. Keep `RC_AGENT_FILE_ROOT` narrow and use paths relative to that root for remote file operations.
 7. Confirm before uninstalling, regenerating identity, clearing pairing, closing windows, cancelling jobs, or replacing remote files.
-8. Do not claim a test or deployment scenario passes without current evidence. Read `docs/CURRENT_PROGRESS.md` and record unresolved validation failures there when requested.
+8. Do not claim a test or deployment scenario passes without current evidence. Read `docs/交接.md` and `docs/审计.md` and record unresolved validation failures there when requested.
 9. Current `copy` and update operations require the advertised binary streaming capabilities. Upgrade an outdated Agent instead of falling back to JSON/Base64. Compare external process time on the same dataset, use fresh destinations, and require post-transfer SHA-256 equality; a successful exit code alone is insufficient.
 
 ## Treat updates as a detached lifecycle
@@ -46,6 +46,6 @@ Resolve discrepancies in this order:
 1. Inspect the current implementation and CLI usage strings under `src/Rc.Cli/Commands`.
 2. Inspect the scripts and their configuration under `scripts/`.
 3. Align `README.md` with implemented behavior.
-4. Use `docs/CURRENT_PROGRESS.md` for validation status and known gaps, not as a substitute for implemented behavior.
+4. Use `docs/审计.md` and `docs/交接.md` for validation status and known gaps, not as a substitute for implemented behavior.
 
 Before changing or committing repository content, inspect the working tree, preserve unrelated user changes, run proportionate validation, and review the final diff.

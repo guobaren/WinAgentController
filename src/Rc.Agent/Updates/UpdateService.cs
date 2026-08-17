@@ -294,6 +294,7 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
                 {
                     session = session with { State = UpdateState.Succeeded, UpdatedAtUtc = timeProvider.GetUtcNow() };
                     await WriteAsync(session, cancellationToken).ConfigureAwait(false);
+                    TryDeletePayloadDirectory(request.UpdateId);
                 }
                 else if (detachedResult is not null)
                 {
@@ -337,6 +338,7 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
                     {
                         session = session with { State = UpdateState.Succeeded, UpdatedAtUtc = timeProvider.GetUtcNow() };
                         await WriteAsync(session, cancellationToken).ConfigureAwait(false);
+                        TryDeletePayloadDirectory(request.UpdateId);
                     }
                     else if (job is { State: JobState.Exited } or { State: JobState.FailedToStart } or { State: JobState.Cancelled } or { State: JobState.InterruptedByReboot } or { State: JobState.HostCrashed })
                     {
@@ -398,6 +400,23 @@ public sealed class UpdateService : IUpdateServiceV1, IDisposable
     private string GetSessionPath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-state.json");
 
     private string GetPayloadDirectory(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "payload");
+
+    // 更新终态收敛为 Succeeded 后删除 payload，仅保留 update-state.json 终态记录。
+    // 清理失败不影响状态查询结果（终态已落盘），交由运维或后续会话处理。
+    private void TryDeletePayloadDirectory(Guid updateId)
+    {
+        try
+        {
+            var payload = GetPayloadDirectory(updateId);
+            if (Directory.Exists(payload))
+            {
+                Directory.Delete(payload, recursive: true);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
 
     private string GetDetachedResultPath(Guid updateId) => Path.Combine(GetSessionDirectory(updateId), "update-result.json");
 

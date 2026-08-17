@@ -75,7 +75,7 @@ public static class FileCommand
 
             await error.WriteLineAsync($"[rcctl] transferSession={session.SessionId}");
             await error.FlushAsync();
-            var speed = new TransferSpeedReporter(error);
+            var speed = new TransferSpeedReporter(error, totalBytes: session.Manifest.Entries.Where(IsFile).Sum(entry => entry.Length));
             var transferredBytes = operation == "upload"
                 ? await UploadAsync(connection, session, path!, speed)
                 : await DownloadAsync(connection, session, destination, speed);
@@ -221,6 +221,7 @@ internal sealed class TransferSpeedReporter
     private readonly TextWriter output;
     private readonly TimeSpan reportInterval;
     private readonly Func<TimeSpan> elapsedProvider;
+    private readonly long? totalBytes;
     private readonly Stopwatch? stopwatch;
     private readonly List<double> samples = [];
     private TimeSpan lastSampleAt;
@@ -229,10 +230,12 @@ internal sealed class TransferSpeedReporter
     public TransferSpeedReporter(
         TextWriter output,
         TimeSpan? reportInterval = null,
-        Func<TimeSpan>? elapsedProvider = null)
+        Func<TimeSpan>? elapsedProvider = null,
+        long? totalBytes = null)
     {
         this.output = output;
         this.reportInterval = reportInterval ?? TimeSpan.FromSeconds(1);
+        this.totalBytes = totalBytes is > 0 ? totalBytes : null;
         if (elapsedProvider is null)
         {
             stopwatch = Stopwatch.StartNew();
@@ -298,8 +301,17 @@ internal sealed class TransferSpeedReporter
         samples.Add(speed);
         lastSampleBytes = TotalBytes;
         lastSampleAt = elapsed;
-        await output.WriteLineAsync(
-            $"[rcctl] progress bytes={TotalBytes} elapsed={elapsed.TotalSeconds:F3}s currentMiB/s={speed:F2}").ConfigureAwait(false);
+        if (totalBytes is { } total)
+        {
+            var percent = Math.Min(100d, 100d * TotalBytes / total);
+            await output.WriteLineAsync(
+                $"[rcctl] progress bytes={TotalBytes} total={total} percent={percent:F1}% elapsed={elapsed.TotalSeconds:F3}s currentMiB/s={speed:F2}").ConfigureAwait(false);
+        }
+        else
+        {
+            await output.WriteLineAsync(
+                $"[rcctl] progress bytes={TotalBytes} elapsed={elapsed.TotalSeconds:F3}s currentMiB/s={speed:F2}").ConfigureAwait(false);
+        }
         await output.FlushAsync().ConfigureAwait(false);
     }
 

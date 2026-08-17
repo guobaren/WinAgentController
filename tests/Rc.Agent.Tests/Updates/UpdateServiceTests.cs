@@ -71,6 +71,8 @@ public sealed class UpdateServiceTests
 
         var finished = await service.GetStatusAsync(new UpdateStatusRequest(request.UpdateId));
         Assert.Equal(UpdateState.Succeeded, finished.State);
+        Assert.False(Directory.Exists(Path.Combine(sessionDirectory, "payload")), "Succeeded 后 payload 应被删除。");
+        Assert.True(File.Exists(Path.Combine(sessionDirectory, "update-state.json")), "Succeeded 后应保留 update-state.json 终态记录。");
     }
 
     [Fact]
@@ -106,6 +108,8 @@ public sealed class UpdateServiceTests
 
         Assert.Equal(UpdateState.Succeeded, finished.State);
         Assert.Null(finished.FailureMessage);
+        Assert.False(Directory.Exists(Path.Combine(sessionDirectory, "payload")), "Succeeded 后 payload 应被删除。");
+        Assert.True(File.Exists(Path.Combine(sessionDirectory, "update-state.json")), "Succeeded 后应保留 update-state.json 终态记录。");
     }
 
     [Fact]

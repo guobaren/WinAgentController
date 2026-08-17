@@ -66,7 +66,7 @@ internal static class UpdateCommand
         var total = manifest.Files.Sum(file => file.Length);
         await error.WriteLineAsync($"[rcctl] updateId={updateId} transport=binary-update-v1 chunkBytes={chunkSize}").ConfigureAwait(false);
         await error.FlushAsync().ConfigureAwait(false);
-        var speed = new TransferSpeedReporter(error);
+        var speed = new TransferSpeedReporter(error, totalBytes: total);
         foreach (var file in manifest.Files)
         {
             var fullPath = Path.Combine(Path.GetFullPath(packagePath), file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
@@ -127,7 +127,8 @@ internal static class UpdateCommand
                 {
                     return status;
                 }
-                await error.WriteLineAsync($"[rcctl] update state={status.State}").ConfigureAwait(false);
+                var percent = status.TotalBytes > 0 ? 100d * status.ReceivedBytes / status.TotalBytes : 0d;
+                await error.WriteLineAsync($"[rcctl] update state={status.State} received={status.ReceivedBytes}/{status.TotalBytes} ({percent:F1}%)").ConfigureAwait(false);
             }
             catch (Exception exception) when (exception is IOException or System.Net.Sockets.SocketException or AuthenticationException or InvalidOperationException)
             {

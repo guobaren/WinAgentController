@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore
+        run: dotnet restore Rc.RemoteController.sln -p:NuGetAudit=false
+      - name: Build
+        run: dotnet build Rc.RemoteController.sln --no-restore -warnaserror
+      - name: Test
+        run: dotnet test Rc.RemoteController.sln --no-build --no-restore -v minimal
+      - name: Publish package
+        shell: powershell
+        run: ./scripts/Publish-RemoteController.ps1 -OutputPath artifacts/publish
+      - name: Stage release zip
+        shell: powershell
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $staging = 'release-staging'
+          New-Item -ItemType Directory -Path $staging -Force | Out-Null
+          Copy-Item -Path artifacts/publish/* -Destination $staging -Recurse
+          Copy-Item -LiteralPath 'docs/安装说明.md' -Destination (Join-Path $staging 'README.md') -Force
+          Copy-Item -LiteralPath 'README.md' -Destination (Join-Path $staging 'README-详细版.md') -Force
+          Copy-Item -LiteralPath 'LICENSE' -Destination (Join-Path $staging 'LICENSE') -Force
+          @"
+          version=$version
+          tag=$env:GITHUB_REF_NAME
+          commit=$env:GITHUB_SHA
+          builtAtUtc=$([DateTime]::UtcNow.ToString('o'))
+          "@ | Set-Content -LiteralPath (Join-Path $staging 'VERSION.txt') -Encoding UTF8
+          Get-ChildItem -LiteralPath $staging -File | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            '{0}  {1}' -f $hash, $_.Name
+          } | Set-Content -LiteralPath (Join-Path $staging 'SHA256SUMS.txt') -Encoding Ascii
+          Compress-Archive -Path (Join-Path $staging '*') -DestinationPath "RemoteController-win-x64-$version.zip" -CompressionLevel Optimal
+          Get-ChildItem -LiteralPath $staging -File | Measure-Object | Select-Object -ExpandProperty Count
+      - name: Publish GitHub release
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          gh release create $env:GITHUB_REF_NAME "RemoteController-win-x64-$version.zip" `
+            --repo $env:GITHUB_REPOSITORY `
+            --title "RemoteController $version" `
+            --generate-notes

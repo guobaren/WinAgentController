@@ -4,7 +4,7 @@
 
 它将命令执行、可恢复长任务、受限文件操作、断点续传、桌面 UI Automation 和 Chromium DOM 控制统一到同一个可验证、可恢复、可审计的控制面中，并通过 TLS 指纹固定、一次性配对、签名会话认证、显式提权和本地权限隔离保护远程操作边界。
 
-> **项目状态：开发中。真实双机 Hyper-V VM 的 UI 自动化验收已完成，但项目仍未宣称完成所有版本、浏览器和部署场景的正式发布回归。** 进度与已知缺口以 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md) 为唯一权威来源。
+> **项目状态：开发中。真实双机 Hyper-V VM 的 UI 自动化验收已完成，但项目仍未宣称完成所有版本、浏览器和部署场景的正式发布回归。** 进度与已知缺口以 [docs/交接.md](docs/交接.md) 与 [docs/审计.md](docs/审计.md) 为权威来源。
 
 ## 目录
 
@@ -52,7 +52,7 @@
 - **输入操作可分离：** 鼠标定位、鼠标按键和滚轮是可独立组合的基本操作；按键或滚轮命令不会隐式移动鼠标，调用方应先单独移动到显式目标区域，再单独执行并验证按键或滚轮操作；
 - **权限可审计：** 普通任务与显式提权任务采用不同执行路径，高风险操作必须由调用方主动选择，并由本地 Broker、ACL 和审计记录约束。
 
-真实双机 VM 验收记录见 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md)。
+真实双机 VM 验收记录见 [docs/审计.md](docs/审计.md) 与 [docs/交接.md](docs/交接.md)。
 
 ### 浏览器控制实现与参考实现
 
@@ -97,7 +97,7 @@ New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
 Copy-Item -LiteralPath $source -Destination $destination -Recurse
 ```
 
-安装后在下一次对话中使用 `$operate-win-agent-controller`。该 Skill 是 Agent 操作指南，不会替代被控端的 `Setup-RemoteControllerAgent.cmd`，普通部署用户无需安装它。具体行为仍以当前代码、脚本和 [`docs/CURRENT_PROGRESS.md`](docs/CURRENT_PROGRESS.md) 为准。
+安装后在下一次对话中使用 `$operate-win-agent-controller`。该 Skill 是 Agent 操作指南，不会替代被控端的 `Setup-RemoteControllerAgent.cmd`，普通部署用户无需安装它。具体行为仍以当前代码、脚本和 [`docs/交接.md`](docs/交接.md)、[`docs/审计.md`](docs/审计.md) 为准。
 
 ## 架构与安全边界
 
@@ -153,6 +153,19 @@ dotnet test Rc.RemoteController.sln --no-build --no-restore -v minimal
 ```
 
 将 `artifacts\publish` 复制到被控机（例如 `C:\Temp\WinAgentController`），并将其中的 `Rc.Cli.exe` 单独复制到控制端可执行位置。首次安装本身不要求被控机保留 CLI，但一键更新协议要求完整更新包包含 CLI，因此建议始终保存脚本生成的完整发布包。请按自己的发行、签名和恶意软件防护流程处理生成的可执行文件。
+
+### 2.1 自动发布（GitHub Releases）
+
+仓库已配置 tag 驱动的自动发布：向 `main` 推送形如 `v1.2.3` 的 tag 后，GitHub Actions（`.github/workflows/release.yml`）会在 `windows-latest` 上执行构建、全量测试与打包，并把 zip 发布到 [Releases](https://github.com/guobaren/WinAgentController/releases)。zip 内含：
+
+- 完整安装包（7 个 exe + 12 个部署/运维脚本）
+- `README.md`（精简安装说明）与 `README-详细版.md`（本文档）
+- `LICENSE`（MIT）、`VERSION.txt`（版本/commit/构建时间）、`SHA256SUMS.txt`（逐文件哈希）
+
+```powershell
+git tag v1.2.3
+git push origin v1.2.3
+```
 
 ### 3. 安装为 Windows 服务
 
@@ -238,9 +251,9 @@ Setup-RemoteControllerAgent.cmd
   --update <updateId> --text
 ```
 
-控制端会从包内 `Rc.Agent.exe` 读取版本（无法读取时必须显式传入 `--version`），构建并签名 SHA-256 清单。当前 Agent 必须公布 `binary-update-v1`；CLI 默认以 64 MiB 原始 TLS 帧直接写入受保护 DataRoot 下的更新 staging，并由两端流式计算、核对逐块 SHA-256。缺少该能力时命令会明确要求先升级 Agent，不再回退 JSON/Base64。`--chunk-size <bytes>` 可在对端公布的上限内调整。单块传输中若连接中断，CLI 会重新建立固定指纹 TLS 会话并重发该块；上传期间 stderr 约每秒显示 `currentMiB/s`，完成统计中的 `bytes`、`wireBytes` 和 `retransmittedBytes` 分别表示逻辑字节、线上实际字节和重发字节，同时显示 `minMiB/s`、`maxMiB/s` 和 `avgMiB/s`。被控端只接受已配对控制端的签名请求，拒绝路径越界、篡改块、缺失必需文件、超过 1 GiB 的包及版本降级。更新会话和任务 ID 存放在受保护的数据根中，便于重连后查询。
+控制端会从包内 `Rc.Agent.exe` 读取版本（无法读取时必须显式传入 `--version`），构建并签名 SHA-256 清单。当前 Agent 必须公布 `binary-update-v1`；CLI 默认以 64 MiB 原始 TLS 帧直接写入受保护 DataRoot 下的更新 staging，并由两端流式计算、核对逐块 SHA-256。缺少该能力时命令会明确要求先升级 Agent，不再回退 JSON/Base64。`--chunk-size <bytes>` 可在对端公布的上限内调整。单块传输中若连接中断，CLI 会重新建立固定指纹 TLS 会话并重发该块；上传期间 stderr 约每秒显示 `currentMiB/s` 与 `percent` 百分比，完成统计中的 `bytes`、`wireBytes` 和 `retransmittedBytes` 分别表示逻辑字节、线上实际字节和重发字节，同时显示 `minMiB/s`、`maxMiB/s` 和 `avgMiB/s`。`--wait` 等待应用期间每秒轮询并显示 `received=X/Y (P%)`，可判断失败发生在上传还是应用阶段。被控端只接受已配对控制端的签名请求，拒绝路径越界、篡改块、缺失必需文件、超过 1 GiB 的包及版本降级。更新会话和任务 ID 存放在受保护的数据根中，便于重连后查询。
 
-Agent 先持久化 `Applying` 状态，再启动独立的 SYSTEM 计划任务。`Invoke-RemoteControllerDetachedUpdate.ps1` 在 Agent/Broker 停止期间继续执行安装，将子更新脚本 stdout/stderr 分别保存为会话目录下的 `update-stdout.log` 和 `update-stderr.log`，并以原子结果文件供 Agent 重启后判定最终状态。若默认 3600 秒内没有 durable result，状态会收敛为 `Failed` 并指向两份日志；可通过 `RC_UPDATE_DETACHED_RESULT_TIMEOUT_SECONDS` 调整。更新脚本会停止 UI Agent、Agent 和 Broker，将旧安装目录移至同一卷的临时备份，再运行安装脚本；安装失败时会删除不完整的新目录、恢复旧目录并尝试启动旧服务。`Succeeded` 表示独立安装脚本退出码为 0，但仍不替代更新后的 probe、认证命令和 UI 健康验收。`C:\ProgramData\RemoteController` 中的证书、配对、任务和审计数据不会被删除。无论在控制机还是被控机刷新安装，都应保持 `RegenerateIdentity=false`，并在完成后重新核对固定指纹、配对状态、认证命令和 UI Agent。真实双节点更新、断线续传和失败回滚状态以 [docs/CURRENT_PROGRESS.md](docs/CURRENT_PROGRESS.md) 为准。
+Agent 先持久化 `Applying` 状态，再启动独立的 SYSTEM 计划任务。`Invoke-RemoteControllerDetachedUpdate.ps1` 在 Agent/Broker 停止期间继续执行安装，将子更新脚本 stdout/stderr 分别保存为会话目录下的 `update-stdout.log` 和 `update-stderr.log`，并以原子结果文件供 Agent 重启后判定最终状态。若默认 3600 秒内没有 durable result，状态会收敛为 `Failed` 并指向两份日志；可通过 `RC_UPDATE_DETACHED_RESULT_TIMEOUT_SECONDS` 调整。更新脚本会停止 UI Agent、Agent 和 Broker，将旧安装目录移至同一卷的临时备份，再运行安装脚本；安装失败时会删除不完整的新目录、恢复旧目录并尝试启动旧服务。`Succeeded` 表示独立安装脚本退出码为 0，但仍不替代更新后的 probe、认证命令和 UI 健康验收。更新收敛为 `Succeeded` 后，Agent 会自动删除该会话的更新包暂存（`payload\`，约 690 MB），仅保留 `update-state.json` 终态记录，避免对端数据目录累积。`C:\ProgramData\RemoteController` 中的证书、配对、任务和审计数据不会被删除。无论在控制机还是被控机刷新安装，都应保持 `RegenerateIdentity=false`，并在完成后重新核对固定指纹、配对状态、认证命令和 UI Agent。真实双节点更新、断线续传和失败回滚状态以 [docs/审计.md](docs/审计.md) 与 [docs/交接.md](docs/交接.md) 为准。
 
 ## 首次连接与日常使用
 
@@ -341,7 +354,7 @@ Agent 端文件服务限制在 `RC_AGENT_FILE_ROOT`（默认由运行账户的�
 & $rcctl copy download 192.168.1.50:43001 'incoming\build-output' --fingerprint <SHA256> --to .\restored
 ```
 
-当前 Agent 必须公布 `binary-transfer-v1` 和 `streaming-integrity-v2`，CLI 默认使用二进制 TLS 流和 64 MiB 分块；缺少能力时直接要求升级 Agent，不再回退 JSON。二进制链路在读写数据的同时由两端计算并核对逐块 SHA-256，不再为清单、块发送和完成确认重复扫描整份文件。单块传输中若连接中断，CLI 会重新建立固定指纹 TLS 会话并从块起点重发；服务重启后则从每 256 MiB 持久化断点继续。传输开始时 CLI 会在标准错误写出 `transferSession=<id>`，传输中约每秒写出 `currentMiB/s`，完成时写出逻辑 `bytes`、线上 `wireBytes`、`retransmittedBytes`、`elapsed`、`minMiB/s`、`maxMiB/s` 和 `avgMiB/s`；stdout 仍保持 JSON envelope，便于脚本处理。中断后也可用会话 ID 查询或续传：
+当前 Agent 必须公布 `binary-transfer-v1` 和 `streaming-integrity-v2`，CLI 默认使用二进制 TLS 流和 64 MiB 分块；缺少能力时直接要求升级 Agent，不再回退 JSON。二进制链路在读写数据的同时由两端计算并核对逐块 SHA-256，不再为清单、块发送和完成确认重复扫描整份文件。单块传输中若连接中断，CLI 会重新建立固定指纹 TLS 会话并从块起点重发；服务重启后则从每 256 MiB 持久化断点继续。传输开始时 CLI 会在标准错误写出 `transferSession=<id>`，传输中约每秒写出 `currentMiB/s` 与 `percent` 百分比（`bytes/total`），完成时写出逻辑 `bytes`、线上 `wireBytes`、`retransmittedBytes`、`elapsed`、`minMiB/s`、`maxMiB/s` 和 `avgMiB/s`；stdout 仍保持 JSON envelope，便于脚本处理。中断后也可用会话 ID 查询或续传：
 
 ```powershell
 & $rcctl copy status 192.168.1.50:43001 <transferSessionId> --fingerprint <SHA256>
@@ -356,7 +369,9 @@ Agent 端文件服务限制在 `RC_AGENT_FILE_ROOT`（默认由运行账户的�
   -Target 192.168.1.50:43001 -Fingerprint <SHA256>
 ```
 
-在 1 GbE 局域网实测中，优化后的 `copy` 两轮结果为：小文件上传 52.57–52.71 MiB/s、下载 69.67–74.71 MiB/s，1 GiB 上传 97.72–99.52 MiB/s、下载 106.06–107.65 MiB/s。相同数据集的 OpenSSH SFTP/SCP 基线为 54.26/75.43 和 102.13/107.27 MiB/s；所有结果均在计时后再次核对 SHA-256。
+在 1 GbE 局域网实测中，`copy` 进程口径结果为：100 小文件上传 59.62 MiB/s、下载 75.46 MiB/s，1 GiB 上传 96.53 MiB/s、下载 106.97 MiB/s；相同数据集的 OpenSSH SFTP/SCP 基线为 65.61/74.74 MiB/s；所有结果均在计时后再次核对 SHA-256。
+
+基准脚本在测试成功后会自动清理本地 `artifacts\transfer-benchmark` 数据与远端基准目录，避免残留；如需保留现场排查，加 `-KeepArtifacts` 重跑。
 
 控制端发起的 TCP 连接和 Agent 接受的 TCP 连接都启用 `TCP_NODELAY`。目录下载会在每个分片间交换小型 JSON 控制帧和 1 字节就绪信号；若保留 Nagle 聚合，Windows 延迟 ACK 会在大量小文件上累积约 20 ms/文件的固定等待。2026-08-14 的 13,667 文件实测中，启用该选项后 WAC 下载进程耗时从 323.634 秒降至 40.443 秒（2.53 MiB/s），同数据集 SCP 为 35.324 秒（2.89 MiB/s），树级 SHA-256 一致。
 
@@ -455,6 +470,7 @@ CLI 无参数或未知命令会输出总览用法；成功的非 `--text` 命令
 | `RC_UPDATE_MAX_CHUNK_BYTES` | `256 KiB` | 旧式 JSON 更新请求的服务端限制；当前 CLI 不使用该路径。 |
 | `RC_UPDATE_MAX_BINARY_CHUNK_BYTES` | `64 MiB` | `binary-update-v1` 更新流分块上限；控制端默认使用公布上限与 64 MiB 的较小值。 |
 | `RC_FILE_MAX_WRITE_BYTES` | `16 MiB` | `fs write` 单次原子写入最大值。 |
+| `RC_UPDATE_DETACHED_RESULT_TIMEOUT_SECONDS` | `3600` | detached 更新结果超时；超时后从 `Applying` 收敛为 `Failed` 并指向日志。 |
 | `RC_CONTROLLER_DATA_ROOT` | `%LOCALAPPDATA%\RemoteController` | 控制端 DPAPI 保护的身份文件目录。 |
 | `RC_UI_AGENT_CLIENT_SID` | 安装脚本根据 `-UiUser` 设置 | Agent 注册管道允许连接的 UI 用户 SID。 |
 | `RC_UI_AGENT_CONTROL_CLIENT_SID` | 安装脚本设置为 Agent 服务 SID | UI Agent 控制管道允许连接的 Agent SID。 |
