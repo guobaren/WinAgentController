@@ -392,7 +392,7 @@ UI 命令使用与其他控制请求相同的 TLS 指纹固定和已配对会话
 
 # 截图、窗口动作、输入和剪贴板。
 & $rcctl ui screenshot 192.168.1.50:43001 --fingerprint <SHA256> window <handle>
-& $rcctl ui window 192.168.1.50:43001 --fingerprint <SHA256> window <handle> activate
+& $rcctl ui window 192.168.1.50:43001 --fingerprint <SHA256> <handle> activate
 & $rcctl ui mouse 192.168.1.50:43001 --fingerprint <SHA256> move window <handle> 200 120
 & $rcctl ui shortcut 192.168.1.50:43001 --fingerprint <SHA256> window <handle> Control L
 & $rcctl ui clipboard 192.168.1.50:43001 --fingerprint <SHA256> write 'https://example.com'
@@ -441,7 +441,7 @@ UI 命令使用与其他控制请求相同的 TLS 指纹固定和已配对会话
 | `rcctl update status <IP:port> --fingerprint <SHA256> --update <GUID> [--text]` | 查询已提交更新的接收、应用或最终状态。 |
 | `rcctl ui status\|snapshot\|displays\|windows <IP:port> --fingerprint <SHA256> [--text]` | 查询活动 UI 会话、显示器、窗口和快照。 |
 | `rcctl ui screenshot <IP:port> --fingerprint <SHA256> <display\|window> <目标>` | 获取指定显示器或窗口的 PNG 截图。 |
-| `rcctl ui window <IP:port> --fingerprint <SHA256> window <句柄> <activate\|minimize\|maximize\|restore\|close>` | 控制窗口状态。 |
+| `rcctl ui window <IP:port> --fingerprint <SHA256> <句柄> <activate\|minimize\|maximize\|restore\|close>` | 控制窗口状态（直接给句柄，无需 `window` 目标关键字）。 |
 | `rcctl ui move <IP:port> --fingerprint <SHA256> window <句柄> <x> <y> <width> <height>` | 移动并调整窗口大小。 |
 | `rcctl ui mouse <IP:port> --fingerprint <SHA256> <move\|button\|wheel> ...` | 在显式显示器/窗口目标上执行鼠标操作；`move`、`button`、`wheel` 相互独立，按键或滚轮前应先单独 `move` 到目标区域。 |
 | `rcctl ui key\|shortcut\|type <IP:port> --fingerprint <SHA256> ...` | 投递按键、快捷键或 Unicode 文本；可靠控件赋值优先使用 `ui element ... setvalue`。 |

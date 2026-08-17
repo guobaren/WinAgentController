@@ -5,6 +5,14 @@ namespace Rc.UiAgent;
 
 internal static class ChromiumDevToolsDocument
 {
+    // 惰性节点（样式/脚本/头部元信息/内联图形）会占满元素配额并淹没正文文本节点；
+    // 遍历时直接跳过、不消耗配额，让 --limit 留给可见内容。
+    private static readonly HashSet<string> InertLocalNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "style", "script", "head", "meta", "link", "noscript", "template", "title", "base",
+        "svg", "path", "circle", "rect", "g", "defs", "clippath", "use", "symbol", "line", "polygon", "polyline", "ellipse",
+    };
+
     public static UiAutomationElementSnapshot CreateSnapshot(JsonElement root, long windowHandle, int maximumDepth, int maximumElements)
     {
         var remaining = maximumElements;
@@ -30,6 +38,10 @@ internal static class ChromiumDevToolsDocument
                 if (remaining == 0)
                 {
                     break;
+                }
+                if (IsInertNode(child))
+                {
+                    continue;
                 }
                 children.Add(CreateSnapshot(child, windowHandle, depth - 1, ref remaining));
             }
@@ -83,4 +95,13 @@ internal static class ChromiumDevToolsDocument
 
     private static string GetString(JsonElement value, string property) =>
         value.TryGetProperty(property, out var result) && result.ValueKind == JsonValueKind.String ? result.GetString() ?? string.Empty : string.Empty;
+
+    private static bool IsInertNode(JsonElement node)
+    {
+        if (!node.TryGetProperty("localName", out var localName) || localName.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+        return InertLocalNames.Contains(localName.GetString() ?? string.Empty);
+    }
 }

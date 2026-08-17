@@ -30,6 +30,33 @@ public sealed class ChromiumDevToolsDocumentTests
     }
 
     [Fact]
+    public void SkipsInertNodesWithoutConsumingElementLimit()
+    {
+        using var document = JsonDocument.Parse("""
+            {
+              "nodeId": 1, "nodeName": "#document", "localName": "", "nodeValue": "", "attributes": [],
+              "children": [
+                { "nodeId": 2, "nodeName": "HEAD", "localName": "head", "nodeValue": "", "attributes": [],
+                  "children": [{ "nodeId": 3, "nodeName": "STYLE", "localName": "style", "nodeValue": "css-noise", "attributes": [] },
+                               { "nodeId": 4, "nodeName": "SCRIPT", "localName": "script", "nodeValue": "js-noise", "attributes": [] }] },
+                { "nodeId": 5, "nodeName": "DIV", "localName": "div", "nodeValue": "", "attributes": [],
+                  "children": [{ "nodeId": 6, "nodeName": "SVG", "localName": "svg", "nodeValue": "", "attributes": [],
+                                 "children": [{ "nodeId": 7, "nodeName": "PATH", "localName": "path", "nodeValue": "", "attributes": [] },
+                                              { "nodeId": 8, "nodeName": "RECT", "localName": "rect", "nodeValue": "", "attributes": [] }] },
+                               { "nodeId": 9, "nodeName": "#text", "localName": "", "nodeValue": "开奖号码 8 8 2", "attributes": [] }] }
+              ]
+            }
+            """);
+
+        // 配额小到装不下 head 下的 style/script 与 svg 图形时，正文文本仍必须出现。
+        var snapshot = ChromiumDevToolsDocument.CreateSnapshot(document.RootElement, 1, maximumDepth: 4, maximumElements: 4);
+
+        var div = Assert.Single(snapshot.Children);
+        Assert.Equal("DOM.div", div.ControlType);
+        Assert.Equal("开奖号码 8 8 2", Assert.Single(div.Children).Name);
+    }
+
+    [Fact]
     public void StopsAtConfiguredDepthAndElementLimit()
     {
         using var document = JsonDocument.Parse("""
