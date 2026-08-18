@@ -28,7 +28,7 @@ public static class FileCommand
                 "write" => await WriteAsync(connection, path!, options),
                 _ => throw new ArgumentException(UsageFs()),
             };
-            if (result is FileReadResponse read && options.ContainsKey("text")) await output.WriteAsync(Encoding.UTF8.GetString(read.Chunk.Data));
+            if (result is FileReadResponse read && options.ContainsKey("text")) await output.WriteAsync(TextDecoding.Decode(read.Chunk.Data));
             else await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(result), ContractJson.Options));
             return 0;
         }

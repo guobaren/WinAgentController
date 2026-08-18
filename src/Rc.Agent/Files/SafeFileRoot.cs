@@ -27,7 +27,8 @@ public sealed class SafeFileRoot
         var full = Path.GetFullPath(Path.IsPathFullyQualified(path) ? path : Path.Combine(Root, path));
         if (!string.Equals(full, Root, StringComparison.OrdinalIgnoreCase) && !full.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            throw new UnauthorizedAccessException("The path is outside the configured file root.");
+            throw new UnauthorizedAccessException(
+                $"The path '{path}' is outside the configured file root ('{Root}', RC_AGENT_FILE_ROOT). fs/copy only serve paths under the root; for other locations use exec/job or an out-of-band transport (e.g. SCP).");
         }
         RejectReparsePoints(full);
         return full;

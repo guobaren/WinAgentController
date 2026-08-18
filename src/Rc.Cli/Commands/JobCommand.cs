@@ -52,6 +52,13 @@ public static class JobCommand
             {
                 await output.WriteLineAsync(JsonSerializer.Serialize(Result.Success(response), ContractJson.Options));
             }
+            // 启动后立即终态且零输出时给出诊断提示（命令可能被转义破坏、默认
+            // shell 不支持 &&/||、或 shell 启动即失败）。
+            if (response.Status.Job.State is JobState.Exited or JobState.FailedToStart
+                && response.Status.StdoutLength == 0 && response.Status.StderrLength == 0)
+            {
+                await error.WriteLineAsync("[rcctl] note: the job ended immediately with zero output; check the command for nested quotes/escaping, '&&'/'||' under PowerShell 5.1, and use 'rcctl job logs --job <jobId> --stream stderr' to inspect diagnostics.");
+            }
             return response.Status.Job.State == JobState.FailedToStart ? 1 : 0;
         }
         catch (Exception exception) when (IsExpectedConnectionException(exception))
@@ -203,6 +210,13 @@ public static class JobCommand
         {
             error = fingerprint is null ? "A SHA-256 TLS fingerprint is required for job commands." : "--command is required.";
             return false;
+        }
+
+        // 默认远程 shell 为 Windows PowerShell 5.1：`&&`/`||` 不是有效分隔符，
+        // 提前提示，避免命令在远端解析失败且零输出时难以定位。
+        if (shell == ShellKind.PowerShell && (command.Contains("&&", StringComparison.Ordinal) || command.Contains("||", StringComparison.Ordinal)))
+        {
+            Console.Error.WriteLine("[rcctl] warning: the default remote shell is Windows PowerShell 5.1, which does not support '&&'/'||'; use --shell cmd or ';' instead.");
         }
 
         try

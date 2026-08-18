@@ -54,6 +54,10 @@ public sealed record AgentOptions
 
     public TimeSpan TransferSessionLifetime { get; init; } = TimeSpan.FromHours(24);
 
+    // exec_once 对端侧执行超时：超时后取消任务并回写错误，避免单通道被
+    // 长命令永久占用（实测 dir /b /s D:\ 递归曾卡死通道数分钟）。
+    public TimeSpan ExecTimeout { get; init; } = TimeSpan.FromSeconds(ReadLong("RC_EXEC_TIMEOUT_SECONDS", 60));
+
     private static long ReadLong(string name, long fallback) =>
         long.TryParse(Environment.GetEnvironmentVariable(name), out var value) && value > 0 ? value : fallback;
 }

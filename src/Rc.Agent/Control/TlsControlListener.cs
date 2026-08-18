@@ -35,6 +35,7 @@ public sealed class TlsControlListener : IAsyncDisposable
     private readonly PairingCoordinator pairingCoordinator;
     private readonly CancellationTokenSource shutdown = new();
     private readonly SemaphoreSlim executeOnceGate = new(1, 1);
+    private volatile ExecOnceOccupant? execOnceOccupant;
     private readonly ManagedTaskRegistry taskRegistry;
     private readonly FileTransferService fileService;
     private readonly AgentOptions options;
@@ -776,16 +777,35 @@ public sealed class TlsControlListener : IAsyncDisposable
 
         if (!await executeOnceGate.WaitAsync(0, cancellationToken))
         {
-            await WriteFailureAsync(writer, ErrorCode.ResourceExhausted, "Another exec_once command is still running.");
+            var occupant = execOnceOccupant;
+            var detail = occupant is null
+                ? "Another exec_once command is still running."
+                : $"Another exec_once command is still running (job={occupant.JobId ?? "starting"} command='{occupant.Command}' startedAt={occupant.StartedAtUtc:O}); cancel it with 'rcctl job cancel <jobId>'.";
+            await WriteFailureAsync(writer, ErrorCode.ResourceExhausted, detail);
             return;
         }
 
         try
         {
+            execOnceOccupant = new ExecOnceOccupant(null, DescribeExec(request.Execution), DateTimeOffset.UtcNow);
             var started = await taskRegistry.StartAsync(request.Execution, cancellationToken).ConfigureAwait(false);
-            var waited = await taskRegistry.WaitAsync(started.Job.JobId, timeout: null, cancellationToken).ConfigureAwait(false);
+            var jobId = started.Job.JobId;
+            execOnceOccupant = execOnceOccupant with { JobId = jobId };
+            var timeout = options.ExecTimeout > TimeSpan.Zero ? options.ExecTimeout : (TimeSpan?)null;
+            var waited = timeout is null
+                ? await taskRegistry.WaitAsync(jobId, timeout: null, cancellationToken).ConfigureAwait(false)
+                : await taskRegistry.WaitAsync(jobId, timeout, cancellationToken).ConfigureAwait(false);
+            if (!waited.Completed)
+            {
+                // 对端侧执行超时：取消任务并回写错误，避免通道被永久占用；
+                // 任务日志仍可经 job logs 查询。
+                await taskRegistry.CancelAsync(jobId, CancellationToken.None).ConfigureAwait(false);
+                var cancelled = await taskRegistry.WaitAsync(jobId, TimeSpan.FromSeconds(30), CancellationToken.None).ConfigureAwait(false);
+                await WriteFailureAsync(writer, ErrorCode.ResourceExhausted,
+                    $"The exec command timed out after {timeout!.Value.TotalSeconds:F0} seconds and was cancelled (job {jobId}); logs remain readable via 'rcctl job logs'.");
+                return;
+            }
             var status = waited.Status;
-            var jobId = status.Job.JobId;
             var standardOutput = await ReadOutputAsync(jobId, JobOutputKind.Stdout, cancellationToken);
             var standardError = await ReadOutputAsync(jobId, JobOutputKind.Stderr, cancellationToken);
             await AuditAsync("job.exec_once", request.ControllerId, jobId, true, null, new Dictionary<string, string> { ["executionIdentity"] = status.Job.ExecutionIdentity.ToString() }, cancellationToken).ConfigureAwait(false);
@@ -806,9 +826,16 @@ public sealed class TlsControlListener : IAsyncDisposable
         }
         finally
         {
+            execOnceOccupant = null;
             executeOnceGate.Release();
         }
     }
+
+    private static string DescribeExec(ExecRequest execution) =>
+        execution.Shell is { } shell ? $"{shell.Kind}: {shell.Command}"
+            : string.Join(' ', execution.DirectArgv ?? []);
+
+    private sealed record ExecOnceOccupant(string? JobId, string Command, DateTimeOffset StartedAtUtc);
 
     private async Task HandleJobStartAsync(JsonElement root, StreamWriter writer, AuthenticatedControlSession? session, CancellationToken cancellationToken)
     {

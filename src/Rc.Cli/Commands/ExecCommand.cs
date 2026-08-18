@@ -29,8 +29,8 @@ public static class ExecCommand
             var response = await connection.SendAsync<ControlExecuteOnceResponse>(request);
             if (text)
             {
-                await output.WriteAsync(Encoding.UTF8.GetString(response.StandardOutput));
-                await error.WriteAsync(Encoding.UTF8.GetString(response.StandardError));
+                await output.WriteAsync(TextDecoding.Decode(response.StandardOutput));
+                await error.WriteAsync(TextDecoding.Decode(response.StandardError));
                 await error.WriteLineAsync($"[rcctl] jobId={response.Job.JobId} state={response.Job.State} exitCode={response.Job.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "n/a"}");
                 if (response.StandardOutputTruncated || response.StandardErrorTruncated)
                 {
@@ -129,6 +129,13 @@ public static class ExecCommand
         {
             error = "--command is required.";
             return false;
+        }
+
+        // 默认远程 shell 为 Windows PowerShell 5.1：`&&`/`||` 不是有效分隔符，
+        // 提前提示，避免命令在远端解析失败且零输出时难以定位。
+        if (shell == ShellKind.PowerShell && (command.Contains("&&", StringComparison.Ordinal) || command.Contains("||", StringComparison.Ordinal)))
+        {
+            Console.Error.WriteLine("[rcctl] warning: the default remote shell is Windows PowerShell 5.1, which does not support '&&'/'||'; use --shell cmd or ';' instead.");
         }
 
         try

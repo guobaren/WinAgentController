@@ -43,7 +43,7 @@ internal static class JobExtendedCommands
 
                     if (options.Text)
                     {
-                        await output.WriteAsync(Encoding.UTF8.GetString(response.Log.Chunk.Data));
+                        await output.WriteAsync(TextDecoding.Decode(response.Log.Chunk.Data));
                         await output.FlushAsync();
                     }
                     else
