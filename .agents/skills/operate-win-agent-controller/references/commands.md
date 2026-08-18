@@ -137,4 +137,16 @@ Pitfalls observed while operating a real target; follow these to operate reliabl
 ### Long-running processes
 
 - Processes started inside an SSH session (e.g. `Start-Process node ...`) are **killed when the session ends** (OpenSSH tree cleanup). Long-lived services belong in a scheduled task or Windows service; `Start-RemoteController.cmd` only starts already-installed services.
-- When creating scheduled tasks with `schtasks /sc once /st`, a start time earlier than now warns but still works with a manual `/run`; prefer the "create + `/run`" pattern in examples.
+- Prefer the "create then `/run`" pattern for scheduled tasks; a `/st` earlier than now warns but still runs manually:
+  ```powershell
+  schtasks /create /tn RemoteControllerJobs /tr "powershell -NoProfile -Command -" /sc once /st 00:00 /f
+  schtasks /run /tn RemoteControllerJobs
+  ```
+
+### Disk and service probes
+
+- `fsutil volume diskfree` is denied under LocalService and `wmic` may fail (exit 44029). Use a PowerShell 5.1-compatible .NET probe instead (also used by `rcctl health`):
+  ```powershell
+  powershell -NoProfile -Command "[IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady } | ForEach-Object { '{0} total={1:N1}GB free={2:N1}GB' -f $_.Name, ($_.TotalSize/1GB), ($_.AvailableFreeSpace/1GB) }"
+  ```
+- For a combined service/port/disk probe, run `rcctl health <IP:port> --fingerprint <SHA256> --text` (exit 0 when both Agent services are running and the control port is listening).
