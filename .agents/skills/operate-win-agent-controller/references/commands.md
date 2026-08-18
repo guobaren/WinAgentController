@@ -146,6 +146,7 @@ Pitfalls observed while operating a real target; follow these to operate reliabl
 
 ### Disk and service probes
 
+- Do **not** stop `RemoteControllerBroker` alone while testing: the Agent service depends on it (`RemoteControllerAgent` DEPENDENCIES=RemoteControllerBroker), so Windows SCM stops the Agent too and the endpoint becomes unreachable (recover with `sc start RemoteControllerBroker` then `sc start RemoteControllerAgent`, or the pre-deployed test recovery channel). Prefer non-destructive negative tests (wrong port/fingerprint → connection or auth failure).
 - `fsutil volume diskfree` is denied under LocalService and `wmic` may fail (exit 44029). Use a PowerShell 5.1-compatible .NET probe instead (also used by `rcctl health`):
   ```powershell
   powershell -NoProfile -Command "[IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady } | ForEach-Object { '{0} total={1:N1}GB free={2:N1}GB' -f $_.Name, ($_.TotalSize/1GB), ($_.AvailableFreeSpace/1GB) }"
