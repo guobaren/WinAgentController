@@ -98,3 +98,44 @@ rcctl ui browser $target --fingerprint $fingerprint dom <handle> --depth 8 --lim
 ```
 
 Prefer DOM or accessibility information to coordinate guessing. DOM access uses the controlled Chromium CDP session and is not a general attachment mechanism for arbitrary browser instances.
+
+## Operating notes from real-endpoint testing (2026-08)
+
+These are pitfalls observed while operating a real target (rcctl + SSH); apply them to avoid the same failures.
+
+### Default shell and quoting
+
+- The default remote shell is **Windows PowerShell 5.1**: `&&`/`||` are **not** valid separators (`"&&"不是此版本中的有效语句分隔符`). Use `--shell cmd` for `&&`, or `;` in PowerShell.
+- PowerShell 5.1 lacks `Join-String` (use `-join`); `$home` is a reserved variable (do not assign it); `fsutil`/`wmic` may be denied under the LocalService account.
+- Nested quotes and `$` variables are expanded by every layer (local pwsh → CLI → remote shell). Avoid `$` and backslashes inside `--command`; for complex scripts, pipe the script through stdin instead:
+  ```powershell
+  $script | ssh $host "powershell -NoProfile -Command -"
+  ```
+  Do not build `powershell -Command \"...\"` chains.
+- Remote output may be GBK-encoded: Chinese filter words (e.g. `findstr "状态"`) can fail. Prefer ASCII patterns, or prefix `chcp 65001` when locale matters.
+- When passing CLI arguments from PowerShell, do not pre-concatenate options into one string variable (`$fp = '--fingerprint x'` becomes a single argument); pass each argument separately or use an array.
+
+### exec and jobs
+
+- **Every `rcctl exec` creates a job record on the target** (job directories accumulate under `DataRoot\segments`). Prefer read-only `fs list`/`fs stat` for queries; avoid repeated trivial `exec` calls.
+- Long-running `exec` commands have **no server-side timeout** (known P0): a hung command blocks the exec channel for minutes and can only be cleared by killing the process via an out-of-band channel (e.g. SSH `taskkill /PID /F /T`). Keep exec commands short; use `job start` for long work.
+- A `job start` that fails instantly may report `Exited exitCode=1` with **zero stdout/stderr** (known P0). Check `job logs --stream stderr` and the Agent log before concluding; if the command needs `&&`, remember the PowerShell 5.1 limitation.
+- For stdin-interactive jobs use a simple reader (e.g. `findstr .`) to avoid nested-escape corruption of the payload.
+
+### File root constraint
+
+- `fs`/`copy` are confined to `RC_AGENT_FILE_ROOT` (default: the Agent service account's user profile). Absolute paths outside it are rejected; the error may be terse (known P1). To reach paths outside the root, use `exec`/`job` (process-level access) or an out-of-band transport such as SCP.
+- To change the root: set `RC_AGENT_FILE_ROOT` in the `RemoteControllerAgent` service Environment (multi-string) and restart the service.
+
+### UI and browser
+
+- `ui window <handle> <action>` takes the handle **without** a `window` keyword (unlike `screenshot`/`elements`, which take `window <handle>`).
+- `ui screenshot` returns JSON with base64 `result.pngBytes`; decode it to obtain the PNG file.
+- `ui browser dom` output is JSON with `\uXXXX`-escaped Chinese text; decode or grep the escape sequences, not raw Chinese.
+- DOM traversal skips inert nodes (style/script/head/svg), so `--limit` is spent on visible content; raise `--depth`/`--limit` for deeply nested pages.
+- Killing a target user's process (e.g. a test browser) from the Agent requires `exec --elevated`; the LocalService account cannot terminate interactive-user processes.
+
+### Long-running processes
+
+- Processes started inside an SSH session (e.g. `Start-Process node ...`) are **killed when the session ends** (OpenSSH tree cleanup). Long-lived services belong in a scheduled task or Windows service; `Start-RemoteController.cmd` only starts already-installed services.
+- When creating scheduled tasks with `schtasks /sc once /st`, a start time earlier than now warns but still works with a manual `/run`; prefer the "create + `/run`" pattern in examples.
