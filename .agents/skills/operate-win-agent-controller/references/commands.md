@@ -114,6 +114,7 @@ Pitfalls observed while operating a real target; follow these to operate reliabl
   Do not build `powershell -Command \"...\"` chains.
 - Remote output may be GBK-encoded: Chinese filter words (e.g. `findstr "状态"`) can fail. Prefer ASCII patterns, or prefix `chcp 65001` when locale matters.
 - When passing CLI arguments from PowerShell, do not pre-concatenate options into one string variable (`$fp = '--fingerprint x'` becomes a single argument); pass each argument separately or use an array.
+- Under `--shell cmd`, avoid nested quotes around redirected paths: `echo x > "%USERPROFILE%\f.txt"` can fail through `cmd /c` argument splitting. Omit quotes when the path has no spaces (`echo x > %USERPROFILE%\f.txt`), or use a PowerShell one-liner instead.
 
 ### exec and jobs
 
