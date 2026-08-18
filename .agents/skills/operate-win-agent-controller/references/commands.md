@@ -99,14 +99,14 @@ rcctl ui browser $target --fingerprint $fingerprint dom <handle> --depth 8 --lim
 
 Prefer DOM or accessibility information to coordinate guessing. DOM access uses the controlled Chromium CDP session and is not a general attachment mechanism for arbitrary browser instances.
 
-## Operating notes from real-endpoint testing (2026-08)
+## Operating notes for agents
 
-These are pitfalls observed while operating a real target (rcctl + SSH); apply them to avoid the same failures.
+Pitfalls observed while operating a real target; follow these to operate reliably.
 
 ### Default shell and quoting
 
-- The default remote shell is **Windows PowerShell 5.1**: `&&`/`||` are **not** valid separators (`"&&"不是此版本中的有效语句分隔符`). Use `--shell cmd` for `&&`, or `;` in PowerShell.
-- PowerShell 5.1 lacks `Join-String` (use `-join`); `$home` is a reserved variable (do not assign it); `fsutil`/`wmic` may be denied under the LocalService account.
+- The default remote shell is **Windows PowerShell 5.1**: `&&`/`||` are **not** valid separators. Use `--shell cmd` for `&&`, or `;` in PowerShell.
+- PowerShell 5.1 lacks `Join-String` (use `-join`); `$home` is a reserved variable (do not assign it).
 - Nested quotes and `$` variables are expanded by every layer (local pwsh → CLI → remote shell). Avoid `$` and backslashes inside `--command`; for complex scripts, pipe the script through stdin instead:
   ```powershell
   $script | ssh $host "powershell -NoProfile -Command -"
@@ -117,14 +117,13 @@ These are pitfalls observed while operating a real target (rcctl + SSH); apply t
 
 ### exec and jobs
 
-- **Every `rcctl exec` creates a job record on the target** (job directories accumulate under `DataRoot\segments`). Prefer read-only `fs list`/`fs stat` for queries; avoid repeated trivial `exec` calls.
-- Long-running `exec` commands have **no server-side timeout** (known P0): a hung command blocks the exec channel for minutes and can only be cleared by killing the process via an out-of-band channel (e.g. SSH `taskkill /PID /F /T`). Keep exec commands short; use `job start` for long work.
-- A `job start` that fails instantly may report `Exited exitCode=1` with **zero stdout/stderr** (known P0). Check `job logs --stream stderr` and the Agent log before concluding; if the command needs `&&`, remember the PowerShell 5.1 limitation.
-- For stdin-interactive jobs use a simple reader (e.g. `findstr .`) to avoid nested-escape corruption of the payload.
+- Prefer `fs list`/`fs stat` for read-only queries: every `rcctl exec` creates a job record on the target.
+- Use `job start` for long-running work and keep `exec` commands short.
+- For stdin-interactive jobs use a simple reader (e.g. `findstr .`) to avoid nested-escape corruption of the payload; write input with `job input` then close it with `job close-input`.
 
 ### File root constraint
 
-- `fs`/`copy` are confined to `RC_AGENT_FILE_ROOT` (default: the Agent service account's user profile). Absolute paths outside it are rejected; the error may be terse (known P1). To reach paths outside the root, use `exec`/`job` (process-level access) or an out-of-band transport such as SCP.
+- `fs`/`copy` are confined to `RC_AGENT_FILE_ROOT` (default: the Agent service account's user profile). Absolute paths outside it are rejected. To reach paths outside the root, use `exec`/`job` (process-level access) or an out-of-band transport such as SCP.
 - To change the root: set `RC_AGENT_FILE_ROOT` in the `RemoteControllerAgent` service Environment (multi-string) and restart the service.
 
 ### UI and browser
