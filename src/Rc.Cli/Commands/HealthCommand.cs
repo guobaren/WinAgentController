@@ -42,10 +42,7 @@ public static class HealthCommand
                 ExecRequest.ForShell(ShellKind.PowerShell,
                     "[IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady } | ForEach-Object { '{0} total={1:N1}GB free={2:N1}GB' -f $_.Name, ($_.TotalSize/1GB), ($_.AvailableFreeSpace/1GB) }"), error);
 
-            var runningServices = services.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-                .Count(line => line.Contains("RUNNING", StringComparison.OrdinalIgnoreCase));
-            var listening = port.Contains("LISTENING", StringComparison.OrdinalIgnoreCase);
-            var healthy = runningServices >= 2 && listening;
+            var (runningServices, listening, healthy) = Evaluate(services, port);
 
             if (text)
             {
@@ -80,6 +77,15 @@ public static class HealthCommand
             await error.WriteLineAsync($"Health check failed: {exception.Message}");
             return 1;
         }
+    }
+
+    /// <summary>判定健康状态：Agent/Broker 两个服务均 RUNNING 且控制端口 LISTENING 才算 OK。</summary>
+    internal static (int RunningServices, bool PortListening, bool Healthy) Evaluate(string servicesOutput, string portOutput)
+    {
+        var runningServices = servicesOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Count(line => line.Contains("RUNNING", StringComparison.OrdinalIgnoreCase));
+        var listening = portOutput.Contains("LISTENING", StringComparison.OrdinalIgnoreCase);
+        return (runningServices, listening, runningServices >= 2 && listening);
     }
 
     private static async Task<string> RunProbeAsync(AuthenticatedControlConnection connection, ExecRequest execution, TextWriter error)
